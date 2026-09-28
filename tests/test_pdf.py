@@ -53,3 +53,25 @@ def test_remove(sample):
     assert len(left) == 1 and left[0]["text"] == "quick brown"
     with pytest.raises(LookupError):
         pdf.remove_annotation(sample, xref)
+
+
+def test_mark_styles_and_margin_note(sample):
+    r = pdf.mark_text(sample, 1, "lazy dog", note="why lazy?", style="underline", note_in_margin=True)
+    assert "note_xref" in r
+    anns = {a["xref"]: a for a in pdf.annotations(sample)}
+    mark, note = anns[r["xref"]], anns[r["note_xref"]]
+    assert mark["type"] == "Underline" and mark["text"].startswith("lazy dog") and mark["note"] == ""
+    assert note["type"] == "Text" and note["note"] == "why lazy?" and note["reply_to"] == r["xref"]
+    with pytest.raises(ValueError):
+        pdf.mark_text(sample, 1, "fox", style="bold")
+
+
+def test_add_note_and_reply(sample):
+    a = pdf.add_note(sample, 2, "page-level remark")
+    b = pdf.add_note(sample, 2, "near the fox", near_text="brown fox")
+    c = pdf.add_note(sample, None, "answering", reply_to=b["xref"])
+    assert c["page"] == 2 and c["reply_to"] == b["xref"]
+    anns = pdf.annotations(sample, page=2)
+    assert [x["note"] for x in anns] == ["page-level remark", "near the fox", "answering"]
+    with pytest.raises(LookupError):
+        pdf.add_note(sample, None, "x", reply_to=999999)

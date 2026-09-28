@@ -1,4 +1,4 @@
-"""The MCP server: seven tools over the viewer, selection and pdf backends."""
+"""The MCP server: eight tools over the viewer, selection and pdf backends."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ mcp = FastMCP(
     instructions=(
         "Okular PDF viewer bridge. viewer_state tells you what the user is reading; "
         "selection returns the text under their mouse; annotations collects their "
-        "highlights and notes from the PDF; add_highlight writes a highlight back. "
+        "highlights and notes from the PDF; mark_text and add_note write marks and notes back. "
         "Okular keeps unsaved annotations in memory: ask the user to save (Ctrl+S) "
         "before reading annotations or writing one."
     ),
@@ -29,6 +29,13 @@ def _current(path: str | None, page: int | None) -> tuple[str, int]:
         return path, page
     w = viewer.current()
     return path or w.path, page or w.page
+
+
+def _reload(path: str) -> None:
+    try:
+        viewer.reload(path)
+    except viewer.ViewerError:
+        pass
 
 
 @mcp.tool()
@@ -60,31 +67,41 @@ def annotations(path: str | None = None, page: int | None = None) -> list[dict[s
 
 
 @mcp.tool()
-def add_highlight(text: str, note: str | None = None, path: str | None = None,
-                  page: int | None = None) -> dict[str, Any]:
-    """Highlight `text` on a page (default: the one shown) with an optional note, saved
-    into the PDF in a distinct colour/author. The user must save Okular first or
-    their unsaved marks are lost on reload."""
+def mark_text(text: str, note: str | None = None, style: str = "highlight",
+              note_in_margin: bool = False, path: str | None = None,
+              page: int | None = None) -> dict[str, Any]:
+    """Mark `text` on a page (default: the one shown) as highlight, underline, squiggly
+    or strikeout, saved into the PDF with a distinct colour/author. A note sits on the
+    mark, or with note_in_margin on a comment icon in the margin replying to it (least
+    intrusive). The user must save Okular first or their unsaved marks are lost."""
     path, page = _current(path, page)
-    result = pdf.add_highlight(path, page, text, note)
-    try:
-        viewer.reload(path)
-    except viewer.ViewerError:
-        pass
+    result = pdf.mark_text(path, page, text, note, style, note_in_margin)
+    _reload(path)
+    return result
+
+
+@mcp.tool()
+def add_note(note: str, near_text: str | None = None, reply_to: int | None = None,
+             path: str | None = None, page: int | None = None) -> dict[str, Any]:
+    """Comment icon in the margin: level with `near_text`, or as a threaded reply to the
+    annotation `reply_to` (an xref from `annotations`, e.g. to answer the user's own
+    note), else at the top of the page. Same save-Okular-first caveat as mark_text."""
+    if not path:
+        w = viewer.current()
+        path, page = w.path, page or (None if reply_to else w.page)
+    result = pdf.add_note(path, page, note, near_text, reply_to)
+    _reload(path)
     return result
 
 
 @mcp.tool()
 def remove_annotation(xref: int, path: str | None = None) -> dict[str, Any]:
     """Delete an annotation by the `xref` reported by `annotations` (default: the open
-    document) and save. Same save-in-Okular-first caveat as add_highlight."""
+    document) and save. Same save-in-Okular-first caveat as mark_text."""
     if not path:
         path = viewer.current().path
     result = pdf.remove_annotation(path, xref)
-    try:
-        viewer.reload(path)
-    except viewer.ViewerError:
-        pass
+    _reload(path)
     return result
 
 

@@ -83,36 +83,128 @@ def annotations(path: str, page: int | None = None) -> list[dict[str, Any]]:
                 }
                 if kind in _MARKUP:
                     entry["text"] = _marked_text(pg, annot)
+                if annot.irt_xref:
+                    entry["reply_to"] = annot.irt_xref
                 if annot.colors.get("stroke"):
                     entry["color"] = [round(c, 2) for c in annot.colors["stroke"]]
                 out.append(entry)
     return out
 
 
-def add_highlight(path: str, page: int, text: str, note: str | None = None,
-                  author: str = DEFAULT_AUTHOR,
-                  color: tuple[float, float, float] = DEFAULT_COLOR) -> dict[str, Any]:
-    """Highlight the first occurrence of ``text`` on ``page`` and save incrementally."""
+_STYLES = {
+    "highlight": ("add_highlight_annot", DEFAULT_COLOR),
+    "underline": ("add_underline_annot", (0.2, 0.45, 1.0)),
+    "squiggly": ("add_squiggly_annot", (0.2, 0.45, 1.0)),
+    "strikeout": ("add_strikeout_annot", (0.9, 0.3, 0.3)),
+}
+
+
+def _find_quads(pg: pymupdf.Page, text: str, page: int) -> list[pymupdf.Quad]:
+    quads = pg.search_for(text, quads=True)
+    if not quads:
+        # Retry with whitespace normalised: selections often carry line breaks.
+        quads = pg.search_for(" ".join(text.split()), quads=True)
+    if not quads:
+        raise LookupError(f"text not found on page {page}: {text[:60]!r}")
+    return quads
+
+
+def _margin_point(pg: pymupdf.Page, y: float) -> pymupdf.Point:
+    """A spot in the left margin level with ``y``, clear of the text area."""
+    blocks = pg.get_text("blocks")
+    left = min((b[0] for b in blocks), default=pg.rect.x0 + 40)
+    x = max(pg.rect.x0 + 2, left - 24)
+    return pymupdf.Point(x, max(pg.rect.y0 + 2, y - 2))
+
+
+def _note_annot(pg: pymupdf.Page, point: pymupdf.Point, note: str, author: str,
+                reply_to: int | None = None) -> pymupdf.Annot:
+    n = pg.add_text_annot(point, note, icon="Comment")
+    now = pymupdf.get_pdf_now()
+    n.set_info(title=author, content=note, creationDate=now, modDate=now)
+    n.set_colors(stroke=(0.2, 0.45, 1.0))
+    if reply_to:
+        n.set_irt_xref(reply_to)
+    n.update()
+    return n
+
+
+def mark_text(path: str, page: int, text: str, note: str | None = None,
+              style: str = "highlight", note_in_margin: bool = False,
+              author: str = DEFAULT_AUTHOR) -> dict[str, Any]:
+    """Mark the first occurrence of ``text`` on ``page`` and save incrementally.
+
+    ``style`` is highlight, underline, squiggly or strikeout. The note goes on the
+    mark itself (shown when hovered/opened) or, with ``note_in_margin``, on a
+    separate comment icon in the margin that replies to the mark, which keeps
+    the text itself quiet.
+    """
+    if style not in _STYLES:
+        raise ValueError(f"style must be one of {', '.join(_STYLES)}")
+    method, color = _STYLES[style]
     doc = _open(path)
     try:
         if not 1 <= page <= doc.page_count:
             raise ValueError(f"page {page} outside 1-{doc.page_count}")
         pg = doc[page - 1]
-        quads = pg.search_for(text, quads=True)
-        if not quads:
-            # Retry with whitespace normalised: selections often carry line breaks.
-            quads = pg.search_for(" ".join(text.split()), quads=True)
-        if not quads:
-            raise LookupError(f"text not found on page {page}: {text[:60]!r}")
-        annot = pg.add_highlight_annot(quads)
+        quads = _find_quads(pg, text, page)
+        annot = getattr(pg, method)(quads)
         annot.set_colors(stroke=color)
         now = pymupdf.get_pdf_now()
-        annot.set_info(title=author, content=note or "", creationDate=now, modDate=now)
+        on_mark = "" if note_in_margin else (note or "")
+        annot.set_info(title=author, content=on_mark, creationDate=now, modDate=now)
         annot.update()
+        result = {"page": page, "xref": annot.xref, "style": style, "text": text,
+                  "note": note or "", "author": author}
+        if note and note_in_margin:
+            n = _note_annot(pg, _margin_point(pg, quads[0].rect.y0), note, author, annot.xref)
+            result["note_xref"] = n.xref
         if not doc.can_save_incrementally():
             raise RuntimeError("document cannot be saved incrementally (encrypted or repaired?)")
         doc.saveIncr()
-        return {"page": page, "xref": annot.xref, "text": text, "note": note or "", "author": author}
+        return result
+    finally:
+        doc.close()
+
+
+def add_highlight(path: str, page: int, text: str, note: str | None = None,
+                  author: str = DEFAULT_AUTHOR) -> dict[str, Any]:
+    return mark_text(path, page, text, note, "highlight", False, author)
+
+
+def add_note(path: str, page: int | None, note: str, near_text: str | None = None,
+             reply_to: int | None = None, author: str = DEFAULT_AUTHOR) -> dict[str, Any]:
+    """A comment icon in the margin: next to ``near_text``, as a threaded reply to
+    annotation ``reply_to`` (page found automatically), or at the top of the page."""
+    doc = _open(path)
+    try:
+        pg = None
+        if reply_to:
+            # Keep the page object alive while its annotations are inspected: an Annot
+            # that outlives its Page crashes PyMuPDF.
+            for n in range(1, doc.page_count + 1):
+                cand = doc[n - 1]
+                y = next((a.rect.y0 for a in cand.annots() if a.xref == reply_to), None)
+                if y is not None:
+                    pg, page, point = cand, n, _margin_point(cand, y)
+                    break
+            if pg is None:
+                raise LookupError(f"no annotation with xref {reply_to}")
+        else:
+            if not page:
+                raise ValueError("page is required unless reply_to is given")
+            if not 1 <= page <= doc.page_count:
+                raise ValueError(f"page {page} outside 1-{doc.page_count}")
+            pg = doc[page - 1]
+            if near_text:
+                point = _margin_point(pg, _find_quads(pg, near_text, page)[0].rect.y0)
+            else:
+                blocks = pg.get_text("blocks")
+                point = _margin_point(pg, min((b[1] for b in blocks), default=pg.rect.y0 + 40))
+        n = _note_annot(pg, point, note, author, reply_to)
+        doc.saveIncr()
+        return {"page": page, "xref": n.xref, "note": note, "author": author,
+                "reply_to": reply_to or 0}
     finally:
         doc.close()
 
