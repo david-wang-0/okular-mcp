@@ -70,8 +70,9 @@ def annotations(path: str | None = None, page: int | None = None) -> list[dict[s
 def mark_text(text: str, note: str | None = None, style: str = "highlight",
               note_in_margin: bool = False, path: str | None = None,
               page: int | None = None) -> dict[str, Any]:
-    """Mark `text` on a page (default: the one shown) as highlight, underline, squiggly
-    or strikeout, saved into the PDF with a distinct colour/author. A note sits on the
+    """Mark every occurrence of `text` on a page (default: the one shown) as highlight,
+    underline, squiggly or strikeout, saved into the PDF with a distinct colour/author;
+    quote enough words to be unique. A note sits on the
     mark, or with note_in_margin on a comment icon in the margin replying to it (least
     intrusive). The user must save Okular first or their unsaved marks are lost."""
     path, page = _current(path, page)

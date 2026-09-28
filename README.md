@@ -19,7 +19,7 @@ database and the notes travel with the file.
 | `get_selection(source="primary")` | Text currently selected with the mouse (`primary`), or the clipboard (`clipboard`) |
 | `page_text(path?, page?, to?)` | Text of a page range; defaults to the page shown in Okular |
 | `annotations(path?, page?)` | All saved annotations: page, type, author, highlighted text, note |
-| `mark_text(text, note?, style?, note_in_margin?, path?, page?)` | Mark `text` as `highlight` (default), `underline`, `squiggly` or `strikeout`, saved incrementally into the PDF. The note sits on the mark, or with `note_in_margin` on a comment icon in the margin that replies to the mark |
+| `mark_text(text, note?, style?, note_in_margin?, path?, page?)` | Mark every occurrence of `text` on the page (quote enough to be unique) as `highlight` (default), `underline`, `squiggly` or `strikeout`, saved incrementally into the PDF. The note sits on the mark, or with `note_in_margin` on a comment icon in the margin that replies to the mark |
 | `add_note(note, near_text?, reply_to?, path?, page?)` | Comment icon in the margin: level with `near_text`, as a threaded reply to annotation `reply_to`, or at the top of the page |
 | `remove_annotation(xref, path?)` | Delete an annotation by the `xref` that `annotations` reports, saved incrementally |
 | `goto(page, path?)` | Jump Okular to a page, opening the document first if needed |

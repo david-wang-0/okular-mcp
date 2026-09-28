@@ -132,7 +132,7 @@ def _note_annot(pg: pymupdf.Page, point: pymupdf.Point, note: str, author: str,
 def mark_text(path: str, page: int, text: str, note: str | None = None,
               style: str = "highlight", note_in_margin: bool = False,
               author: str = DEFAULT_AUTHOR) -> dict[str, Any]:
-    """Mark the first occurrence of ``text`` on ``page`` and save incrementally.
+    """Mark every occurrence of ``text`` on ``page`` and save incrementally.
 
     ``style`` is highlight, underline, squiggly or strikeout. The note goes on the
     mark itself (shown when hovered/opened) or, with ``note_in_margin``, on a
