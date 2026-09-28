@@ -19,13 +19,15 @@ database and the notes travel with the file.
 | `get_selection(source="primary")` | Text currently selected with the mouse (`primary`), or the clipboard (`clipboard`), plus the document, page and line numbers when it is found on the page shown |
 | `page_text(path?, page?, to?, lines?)` | Numbered text lines of a page range, defaulting to the page shown in Okular; `lines="12-30"` narrows to a window |
 | `context(neighbours?, text?, path?, page?)` | The paragraph around the current mouse selection (or `text`) on the page shown, with neighbouring paragraphs and line numbers |
+| `links(path?, page?)` | Links on a page: anchor text and line, then the target page and line for internal links (citations, sections, figures) or the URL, so the model can follow a citation with `page_text` on its own |
+| `outline(path?)` | The bookmark tree (sections with page numbers), a map of the paper |
 | `annotations(path?, page?)` | All saved annotations: page, type, author, highlighted text, note |
 | `mark_text(text, note?, style?, note_in_margin?, color?, path?, page?)` | Mark every occurrence of `text` on the page (quote enough to be unique) as `highlight` (default), `underline`, `squiggly` or `strikeout`, saved incrementally into the PDF. The note sits on the mark, or with `note_in_margin` on a comment icon in the margin that replies to the mark |
 | `add_note(note, near_text?, reply_to?, color?, path?, page?)` | Comment icon in the margin: level with `near_text`, as a threaded reply to annotation `reply_to`, or at the top of the page |
 | `attach_file(name, content, note?, near_text?, replace_xref?, color?, path?, page?)` | Embed a text file (`notes.md`, `diagram.mmd`, ...) as a paperclip annotation in the margin, or replace the file of an existing attachment. Okular saves it from the icon's context menu |
 | `read_attachment(xref, path?)` | Contents of a file-attachment annotation, decoded as text |
 | `remove_annotation(xref, path?)` | Delete an annotation by the `xref` that `annotations` reports, saved incrementally |
-| `goto(page, path?)` | Jump Okular to a page, opening the document first if needed |
+| `goto(page, path?)` | Jump Okular to a page, opening the document first if needed. Meant for "show me where that is defined", not for the model to navigate on its own |
 
 Marks written by the server carry a distinct author (`llm`, override with
 `OKULAR_MCP_AUTHOR`) and a light-blue colour (blue for underlines and notes, red for strikeout), so they
@@ -71,7 +73,9 @@ Any other client: run `okular-mcp` as a stdio server.
    server only sees what is in the file.
 3. Ask the LLM to collect the highlights (`annotations`), discuss the page you
    are on (`viewer_state`, `page_text`), or explain the phrase under your mouse
-   in its paragraph (`get_selection`, `context`).
+   in its paragraph (`get_selection`, `context`). It can follow citations and
+   section references itself (`links`, then `page_text` at the target line) and
+   get a map of the paper (`outline`).
 4. Let it mark back (`mark_text`; `style="underline"` with `note_in_margin` is the
    least intrusive), answer a note of yours as a threaded reply (`add_note` with
    `reply_to`), attach a Markdown or Mermaid file next to a passage

@@ -1,4 +1,4 @@
-"""The MCP server: eleven tools over the viewer, selection and pdf backends."""
+"""The MCP server: twelve tools over the viewer, selection and pdf backends."""
 
 from __future__ import annotations
 
@@ -10,14 +10,22 @@ try:  # mcp >= 2: FastMCP was renamed MCPServer
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
+from mcp.types import ToolAnnotations
+
 from . import pdf, selection, viewer
+
+READ = ToolAnnotations(readOnlyHint=True)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
+DELETE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 mcp = FastMCP(
     "okular",
     instructions=(
         "Okular PDF viewer bridge. viewer_state tells you what the user is reading; "
         "get_selection returns the text under their mouse and context the paragraph around it; annotations collects their "
-        "highlights and notes from the PDF; mark_text, add_note and attach_file write marks, notes and files (e.g. Markdown, Mermaid) back. "
+        "highlights and notes from the PDF; links and outline let you follow citations and "
+        "sections yourself (use goto only when the user asks to be shown a place); mark_text, add_note and "
+        "attach_file write marks, notes and files (e.g. Markdown, Mermaid) back. "
         "Okular keeps unsaved annotations in memory: ask the user to save (Ctrl+S) "
         "before reading annotations or writing one."
     ),
@@ -38,17 +46,19 @@ def _reload(path: str) -> None:
         pass
 
 
-@mcp.tool()
+@mcp.tool(title="Okular: open documents and pages", annotations=READ)
 def viewer_state() -> list[dict[str, Any]]:
-    """Open Okular windows: document path, current page (1-based) and page count."""
+    """Which PDF and page Okular is showing.
+
+    Open Okular windows: document path, current page (1-based) and page count."""
     return [asdict(w) for w in viewer.windows()]
 
 
-@mcp.tool()
+@mcp.tool(title="Okular: mouse selection", annotations=READ)
 def get_selection(source: str = "primary") -> dict[str, Any]:
-    """Text currently selected with the mouse ('primary') or on the clipboard ('clipboard'),
-    with the document path, page and line numbers when it is found on the page Okular
-    shows (line numbers match page_text and context)."""
+    """Text the user has selected with the mouse, with page and lines.
+
+    Text currently selected with the mouse ('primary') or on the clipboard ('clipboard'), with the document path, page and line numbers when it is found on the page Okular shows (line numbers match page_text and context)."""
     text = selection.read(source)
     result: dict[str, Any] = {"text": text, "source": source}
     try:
@@ -61,61 +71,77 @@ def get_selection(source: str = "primary") -> dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: page text, numbered lines", annotations=READ)
 def page_text(path: str | None = None, page: int | None = None, to: int | None = None,
               lines: str | None = None) -> str:
-    """Numbered text lines of a page range (default: the page shown in Okular);
-    `lines` such as "12-30" narrows to a window. Line numbers match `context`."""
+    """Numbered text lines of a page range.
+
+    Numbered text lines of a page range (default: the page shown in Okular); `lines` such as "12-30" narrows to a window. Line numbers match `context`."""
     path, page = _current(path, page)
     return pdf.page_text(path, page, to, lines)
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: paragraph around the selection", annotations=READ)
 def context(neighbours: int = 1, text: str | None = None, path: str | None = None,
             page: int | None = None) -> dict[str, Any]:
-    """The paragraph around the user's current mouse selection (or `text`) on the page
-    shown, with `neighbours` paragraphs before and after and the line numbers, so you
-    can see what they are pointing at without reading the whole page."""
+    """The paragraph around the user's mouse selection.
+
+    The paragraph around the user's current mouse selection (or `text`) on the page shown, with `neighbours` paragraphs before and after and the line numbers, so you can see what they are pointing at without reading the whole page."""
     path, page = _current(path, page)
     if text is None:
         text = selection.read("primary")
     return pdf.context(path, page, text, neighbours)
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: links on a page", annotations=READ)
+def links(path: str | None = None, page: int | None = None) -> list[dict[str, Any]]:
+    """Links on a page with their targets, to follow citations yourself.
+
+    Links on a page (default: the page shown): anchor text and line, then the target page and line for internal links (citations, sections, figures) or the URL. Follow one with page_text(page=..., lines="<target_line>-...")."""
+    path, page = _current(path, page)
+    return pdf.links(path, page)
+
+
+@mcp.tool(title="PDF: table of contents", annotations=READ)
+def outline(path: str | None = None) -> list[dict[str, Any]]:
+    """The document's table of contents.
+
+    The document's bookmark tree (sections with page numbers), a map of the paper."""
+    if not path:
+        path = viewer.current().path
+    return pdf.outline(path)
+
+
+@mcp.tool(title="PDF: highlights and notes", annotations=READ)
 def annotations(path: str | None = None, page: int | None = None) -> list[dict[str, Any]]:
-    """All annotations in the PDF (default: the open document): page, type, author,
-    highlighted text, note. Only annotations saved to the file are visible."""
+    """All highlights, notes and attachments saved in the PDF.
+
+    All annotations in the PDF (default: the open document): page, type, author, highlighted text, note. Only annotations saved to the file are visible."""
     if not path:
         path = viewer.current().path
     return pdf.annotations(path, page)
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: highlight or underline text", annotations=WRITE)
 def mark_text(text: str, note: str | None = None, style: str = "highlight",
               note_in_margin: bool = False, color: str | None = None,
               path: str | None = None, page: int | None = None) -> dict[str, Any]:
-    """Mark every occurrence of `text` on a page (default: the one shown) as highlight,
-    underline, squiggly or strikeout, saved into the PDF under a distinct author; quote
-    enough words to be unique. A note sits on the mark, or with note_in_margin on a
-    comment icon in the margin replying to it (least intrusive). `color`: blue, yellow,
-    green, orange, pink, purple, red, cyan, grey, #rrggbb or r,g,b in 0-1 (default light
-    blue; red for strikeout). The user must save Okular first or their unsaved marks are
-    lost."""
+    """Highlight, underline, squiggle or strike out a passage, with a note.
+
+    Mark every occurrence of `text` on a page (default: the one shown) as highlight, underline, squiggly or strikeout, saved into the PDF under a distinct author; quote enough words to be unique. A note sits on the mark, or with note_in_margin on a comment icon in the margin replying to it (least intrusive). `color`: blue, yellow, green, orange, pink, purple, red, cyan, grey, #rrggbb or r,g,b in 0-1 (default light blue; red for strikeout). The user must save Okular first or their unsaved marks are lost."""
     path, page = _current(path, page)
     result = pdf.mark_text(path, page, text, note, style, note_in_margin, color=color)
     _reload(path)
     return result
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: margin note or reply", annotations=WRITE)
 def add_note(note: str, near_text: str | None = None, reply_to: int | None = None,
              color: str | None = None, path: str | None = None,
              page: int | None = None) -> dict[str, Any]:
-    """Comment icon in the margin: level with `near_text`, or as a threaded reply to the
-    annotation `reply_to` (an xref from `annotations`, e.g. to answer the user's own
-    note), else at the top of the page. `color` as in mark_text. Same save-Okular-first
-    caveat as mark_text."""
+    """Put a comment icon in the margin, or reply to an annotation.
+
+    Comment icon in the margin: level with `near_text`, or as a threaded reply to the annotation `reply_to` (an xref from `annotations`, e.g. to answer the user's own note), else at the top of the page. `color` as in mark_text. Same save-Okular-first caveat as mark_text."""
     if not path:
         w = viewer.current()
         path, page = w.path, page or (None if reply_to else w.page)
@@ -124,15 +150,14 @@ def add_note(note: str, near_text: str | None = None, reply_to: int | None = Non
     return result
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: attach a text file", annotations=WRITE)
 def attach_file(name: str, content: str, note: str | None = None,
                 near_text: str | None = None, replace_xref: int | None = None,
                 color: str | None = None, path: str | None = None,
                 page: int | None = None) -> dict[str, Any]:
-    """Embed a text file (e.g. notes.md, diagram.mmd) as a paperclip annotation in the
-    margin, level with `near_text` or at the top of the page; or replace the file of
-    an existing attachment `replace_xref`. Okular saves it via the icon's context menu.
-    Same save-Okular-first caveat as mark_text."""
+    """Embed a text file (Markdown, Mermaid) as a paperclip annotation.
+
+    Embed a text file (e.g. notes.md, diagram.mmd) as a paperclip annotation in the margin, level with `near_text` or at the top of the page; or replace the file of an existing attachment `replace_xref`. Okular saves it via the icon's context menu. Same save-Okular-first caveat as mark_text."""
     if not path:
         w = viewer.current()
         path, page = w.path, page or (None if replace_xref else w.page)
@@ -141,19 +166,21 @@ def attach_file(name: str, content: str, note: str | None = None,
     return result
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: read an attached file", annotations=READ)
 def read_attachment(xref: int, path: str | None = None) -> dict[str, Any]:
-    """Contents of a file-attachment annotation (an xref from `annotations` with a
-    `file` field), decoded as text."""
+    """Read an attached file back as text.
+
+    Contents of a file-attachment annotation (an xref from `annotations` with a `file` field), decoded as text."""
     if not path:
         path = viewer.current().path
     return pdf.read_attachment(path, xref)
 
 
-@mcp.tool()
+@mcp.tool(title="PDF: delete an annotation", annotations=DELETE)
 def remove_annotation(xref: int, path: str | None = None) -> dict[str, Any]:
-    """Delete an annotation by the `xref` reported by `annotations` (default: the open
-    document) and save. Same save-in-Okular-first caveat as mark_text."""
+    """Delete an annotation by xref.
+
+    Delete an annotation by the `xref` reported by `annotations` (default: the open document) and save. Same save-in-Okular-first caveat as mark_text."""
     if not path:
         path = viewer.current().path
     result = pdf.remove_annotation(path, xref)
@@ -161,9 +188,11 @@ def remove_annotation(xref: int, path: str | None = None) -> dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@mcp.tool(title="Okular: show a page to the user", annotations=WRITE)
 def goto(page: int, path: str | None = None) -> dict[str, Any]:
-    """Jump Okular to `page` of `path` (default: current document; opens it if needed)."""
+    """Jump Okular to a page for the user.
+
+    Jump Okular to `page` of `path` (default: current document; opens it if needed)."""
     return asdict(viewer.goto(page, path))
 
 

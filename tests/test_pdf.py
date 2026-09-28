@@ -141,3 +141,28 @@ def test_colors(sample):
     assert by[u["xref"]]["color"] == [0.5, 0.25, 0.0]
     with pytest.raises(ValueError):
         pdf.mark_text(sample, 1, "fox", color="chartreuse")
+
+
+def test_links_and_outline(tmp_path):
+    path = tmp_path / "l.pdf"
+    doc = pymupdf.open()
+    doc.new_page(), doc.new_page()  # page objects are invalidated by new_page: fetch afterwards
+    p1, p2 = doc[0], doc[1]
+    p1.insert_text((72, 72), "See [1] and the site.")
+    p1.insert_text((72, 100), "Second line.")
+    p2.insert_text((72, 72), "Heading on page two.")
+    p2.insert_text((72, 300), "[1] The cited work.")
+    words = {w[4]: pymupdf.Rect(w[:4]) for w in p1.get_text("words")}
+    p1.insert_link({"kind": pymupdf.LINK_GOTO, "from": words["[1]"], "page": 1, "to": pymupdf.Point(72, 290)})
+    p1.insert_link({"kind": pymupdf.LINK_URI, "from": words["site."], "uri": "https://example.org"})
+    doc.set_toc([[1, "Intro", 1], [2, "Sub", 2]])
+    doc.save(path); doc.close()
+    assert pdf.outline(str(path)) == [{"level": 1, "title": "Intro", "page": 1}, {"level": 2, "title": "Sub", "page": 2}]
+    ls = pdf.links(str(path), 1)
+    assert len(ls) == 2
+    goto = next(l for l in ls if "page" in l)
+    assert goto["text"] == "[1]" and goto["line"] == 1 and goto["page"] == 2 and goto["target_line"] == 2
+    uri = next(l for l in ls if "url" in l)
+    assert uri["url"] == "https://example.org" and uri["text"] == "site." and uri["line"] == 1
+    assert pdf.page_text(str(path), 2, lines="2-2").endswith("2: [1] The cited work.")
+    assert pdf.links(str(path), 2) == []

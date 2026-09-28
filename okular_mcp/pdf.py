@@ -173,6 +173,65 @@ def context(path: str, page: int, text: str, neighbours: int = 1) -> dict[str, A
         }
 
 
+def outline(path: str) -> list[dict[str, Any]]:
+    """The document's bookmark tree (table of contents): level, title, page."""
+    with _open(path) as doc:
+        return [{"level": lvl, "title": title, "page": page}
+                for lvl, title, page in doc.get_toc(simple=True)]
+
+
+def _line_at(ls: list[dict[str, Any]], y: float) -> int | None:
+    """Number of the first line starting at or below ``y`` (top-left coordinates);
+    link anchors sit just above their target line."""
+    for l in ls:
+        if l["bbox"].y0 >= y - 2:
+            return l["n"]
+    return ls[-1]["n"] if ls else None
+
+
+def links(path: str, page: int) -> list[dict[str, Any]]:
+    """Links on ``page``: anchor text and line, then either the target page and
+    line (internal links, e.g. citations, sections, figures) or the URL."""
+    out: list[dict[str, Any]] = []
+    with _open(path) as doc:
+        if not 1 <= page <= doc.page_count:
+            raise ValueError(f"page {page} outside 1-{doc.page_count}")
+        pg = doc[page - 1]
+        ls = _lines(pg)
+        target_lines: dict[int, list[dict[str, Any]]] = {}
+        for link in pg.get_links():
+            r = pymupdf.Rect(link["from"])
+            r.y0 += r.height * 0.2
+            r.y1 -= r.height * 0.2
+            entry: dict[str, Any] = {
+                "text": " ".join(pg.get_textbox(r).split()),
+                "line": next((l["n"] for l in ls if l["bbox"].intersects(r)), None),
+            }
+            kind = link["kind"]
+            if kind == pymupdf.LINK_URI:
+                entry["url"] = link.get("uri", "")
+            elif kind in (pymupdf.LINK_GOTO, pymupdf.LINK_NAMED) and link.get("page", -1) >= 0:
+                tp = link["page"] + 1
+                entry["page"] = tp
+                if link.get("nameddest"):
+                    entry["dest"] = link["nameddest"]
+                to = link.get("to")
+                if to is not None and 1 <= tp <= doc.page_count:
+                    target = doc[tp - 1]
+                    y = pymupdf.Point(to).y
+                    if kind == pymupdf.LINK_NAMED:
+                        # Resolved named destinations keep PDF (bottom-up) coordinates,
+                        # unlike plain GoTo links, which PyMuPDF already converts.
+                        y = target.rect.height - y
+                    if tp not in target_lines:
+                        target_lines[tp] = _lines(target)
+                    entry["target_line"] = _line_at(target_lines[tp], y)
+            else:
+                continue  # launch/unknown links are not useful to a reader
+            out.append(entry)
+    return out
+
+
 def _marked_text(pg: pymupdf.Page, annot: pymupdf.Annot) -> str:
     """Words of the page whose centre line lies inside one of the annot's quads.
 
