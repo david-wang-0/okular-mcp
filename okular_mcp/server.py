@@ -45,9 +45,20 @@ def viewer_state() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def get_selection(source: str = "primary") -> str:
-    """Text currently selected with the mouse ('primary') or on the clipboard ('clipboard')."""
-    return selection.read(source)
+def get_selection(source: str = "primary") -> dict[str, Any]:
+    """Text currently selected with the mouse ('primary') or on the clipboard ('clipboard'),
+    with the document path, page and line numbers when it is found on the page Okular
+    shows (line numbers match page_text and context)."""
+    text = selection.read(source)
+    result: dict[str, Any] = {"text": text, "source": source}
+    try:
+        w = viewer.current()
+        where = pdf.locate(w.path, w.page, text)
+    except (viewer.ViewerError, OSError):
+        where = None
+    if where:
+        result.update({"path": w.path, **where})
+    return result
 
 
 @mcp.tool()

@@ -18,7 +18,6 @@ class SelectionError(RuntimeError):
 
 
 def _run(cmd: list[str]) -> str:
-    ensure_session_env()
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
     except subprocess.TimeoutExpired as e:
@@ -35,6 +34,7 @@ def read(source: str = "primary") -> str:
     """``source`` is ``primary`` (mouse selection) or ``clipboard``."""
     if source not in ("primary", "clipboard"):
         raise SelectionError("source must be 'primary' or 'clipboard'")
+    ensure_session_env()
     if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
         args = ["wl-paste", "--no-newline"]
         if source == "primary":

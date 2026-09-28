@@ -16,7 +16,7 @@ database and the notes travel with the file.
 | Tool | What it does |
 |---|---|
 | `viewer_state()` | Every open Okular window: document path, current page (1-based), page count |
-| `get_selection(source="primary")` | Text currently selected with the mouse (`primary`), or the clipboard (`clipboard`) |
+| `get_selection(source="primary")` | Text currently selected with the mouse (`primary`), or the clipboard (`clipboard`), plus the document, page and line numbers when it is found on the page shown |
 | `page_text(path?, page?, to?, lines?)` | Numbered text lines of a page range, defaulting to the page shown in Okular; `lines="12-30"` narrows to a window |
 | `context(neighbours?, text?, path?, page?)` | The paragraph around the current mouse selection (or `text`) on the page shown, with neighbouring paragraphs and line numbers |
 | `annotations(path?, page?)` | All saved annotations: page, type, author, highlighted text, note |

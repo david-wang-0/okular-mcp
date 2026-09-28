@@ -116,26 +116,44 @@ def page_text(path: str, page: int, to: int | None = None, lines: str | None = N
         return "\n".join(parts)
 
 
-def context(path: str, page: int, text: str, neighbours: int = 1) -> dict[str, Any]:
-    """The paragraph containing ``text`` on ``page``, with ``neighbours`` blocks
-    before and after, and the line numbers involved."""
+def _hit_lines(pg: pymupdf.Page, text: str, page: int) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Locate ``text`` on ``pg``: (normalised needle, all page lines, the lines it covers)."""
     needle = " ".join(text.split())
     if not needle:
         raise ValueError("nothing selected: select text with the mouse first")
+    hits = pg.search_for(needle)
+    if not hits:
+        # Long selections can cross columns or pages: fall back to their first words.
+        hits = pg.search_for(" ".join(needle.split()[:6]))
+    if not hits:
+        raise LookupError(f"selection not found on page {page}: {needle[:60]!r}")
+    ls = _lines(pg)
+    hit_lines = [l for l in ls if any(l["bbox"].intersects(h) for h in hits)]
+    if not hit_lines:
+        raise LookupError("selection found but not attributable to a text line")
+    return needle, ls, hit_lines
+
+
+def locate(path: str, page: int, text: str) -> dict[str, Any] | None:
+    """Where ``text`` sits on ``page``: ``{"page", "lines"}``, or ``None`` if absent."""
+    with _open(path) as doc:
+        if not 1 <= page <= doc.page_count:
+            return None
+        try:
+            _, _, hit_lines = _hit_lines(doc[page - 1], text, page)
+        except (LookupError, ValueError):
+            return None
+        return {"page": page, "lines": f"{hit_lines[0]['n']}-{hit_lines[-1]['n']}"}
+
+
+def context(path: str, page: int, text: str, neighbours: int = 1) -> dict[str, Any]:
+    """The paragraph containing ``text`` on ``page``, with ``neighbours`` blocks
+    before and after, and the line numbers involved."""
     with _open(path) as doc:
         if not 1 <= page <= doc.page_count:
             raise ValueError(f"page {page} outside 1-{doc.page_count}")
         pg = doc[page - 1]
-        hits = pg.search_for(needle)
-        if not hits:
-            # Long selections can cross columns or pages: fall back to their first words.
-            hits = pg.search_for(" ".join(needle.split()[:6]))
-        if not hits:
-            raise LookupError(f"selection not found on page {page}: {needle[:60]!r}")
-        ls = _lines(pg)
-        hit_lines = [l for l in ls if any(l["bbox"].intersects(h) for h in hits)]
-        if not hit_lines:
-            raise LookupError("selection found but not attributable to a text line")
+        needle, ls, hit_lines = _hit_lines(pg, text, page)
         blocks = sorted({l["block"] for l in hit_lines})
         lo_b, hi_b = blocks[0] - neighbours, blocks[-1] + neighbours
 

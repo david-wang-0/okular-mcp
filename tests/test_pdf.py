@@ -44,6 +44,10 @@ def test_context(tmp_path):
     assert c["before"] == "Intro para line one.\nIntro para line two." and c["after"] == "Closing para here."
     assert c["lines"] == "3-4" and c["paragraph_lines"] == "3-4"
     assert pdf.context(str(path), 1, "fox", neighbours=0)["before"] == ""
+    assert pdf.locate(str(path), 1, "fox\njumps") == {"page": 1, "lines": "3-4"}
+    assert pdf.locate(str(path), 1, "absent words") is None
+    assert pdf.locate(str(path), 1, "   ") is None
+    assert pdf.locate(str(path), 9, "fox") is None
     with pytest.raises(LookupError):
         pdf.context(str(path), 1, "not on this page at all")
     with pytest.raises(ValueError):
