@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+try:  # mcp >= 2: FastMCP was renamed MCPServer
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP
 
 from . import pdf, selection, viewer
 

@@ -12,6 +12,8 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
+from .env import ensure_session_env
+
 
 class ViewerError(RuntimeError):
     """Raised when no viewer is running or a D-Bus call fails."""
@@ -28,6 +30,7 @@ class ViewerWindow:
 
 
 def _qdbus() -> str:
+    ensure_session_env()
     for name in ("qdbus", "qdbus6", "qdbus-qt6", "qdbus-qt5"):
         exe = shutil.which(name)
         if exe:

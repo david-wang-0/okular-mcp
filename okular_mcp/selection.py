@@ -10,12 +10,15 @@ import os
 import shutil
 import subprocess
 
+from .env import ensure_session_env
+
 
 class SelectionError(RuntimeError):
     pass
 
 
 def _run(cmd: list[str]) -> str:
+    ensure_session_env()
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
     except subprocess.TimeoutExpired as e:

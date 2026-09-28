@@ -77,6 +77,11 @@ Any other client: run `okular-mcp` as a stdio server.
   separate windows if you rely on `viewer_state`.
 - **Selection text is Okular's text layer**, returned verbatim: hyphenation
   and column order can be messy.
+- **Minimal client environments.** Some MCP clients (Codex, the Python SDK's
+  client) start servers with only `HOME`, `PATH`, `SHELL` and `USER`. The server
+  then recovers `DBUS_SESSION_BUS_ADDRESS` and `WAYLAND_DISPLAY` from
+  `XDG_RUNTIME_DIR` (or `/run/user/<uid>`), so no per-client `env` block is
+  needed on a systemd desktop.
 - Highlighted text is recovered from the annotation's quads, so it can pick
   up a neighbouring word on tight line spacing.
 
