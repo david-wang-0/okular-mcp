@@ -75,3 +75,41 @@ def test_add_note_and_reply(sample):
     assert [x["note"] for x in anns] == ["page-level remark", "near the fox", "answering"]
     with pytest.raises(LookupError):
         pdf.add_note(sample, None, "x", reply_to=999999)
+
+
+def test_attachments(sample):
+    md = "# Notes\n\n```mermaid\ngraph TD; A-->B;\n```\n"
+    r = pdf.attach_file(sample, 1, "notes.md", md, note="summary", near_text="brown fox")
+    assert r["bytes"] == len(md.encode())
+    (a,) = pdf.annotations(sample)
+    assert a["type"] == "FileAttachment" and a["file"] == "notes.md" and a["bytes"] == r["bytes"]
+    back = pdf.read_attachment(sample, r["xref"])
+    assert back["content"] == md and back["name"] == "notes.md" and back["note"] == "summary"
+    r2 = pdf.attach_file(sample, None, "diagram.mmd", "graph LR; X-->Y;", replace_xref=r["xref"])
+    assert r2["xref"] == r["xref"] and r2["page"] == 1
+    back = pdf.read_attachment(sample, r["xref"])
+    assert back["content"] == "graph LR; X-->Y;" and back["name"] == "diagram.mmd"
+    h = pdf.mark_text(sample, 2, "lazy dog")
+    with pytest.raises(ValueError):
+        pdf.read_attachment(sample, h["xref"])
+
+
+def test_colors(sample):
+    assert pdf.parse_color(None, (1, 1, 1)) == (1, 1, 1)
+    assert pdf.parse_color("Green", (0, 0, 0)) == pdf.COLORS["green"]
+    assert pdf.parse_color("#ff0000", (0, 0, 0)) == (1.0, 0.0, 0.0)
+    assert pdf.parse_color("0.5,0.25,0", (0, 0, 0)) == (0.5, 0.25, 0.0)
+    for bad in ("chartreuse", "1,2,3", "#12345"):
+        with pytest.raises(ValueError):
+            pdf.parse_color(bad, (0, 0, 0))
+    r = pdf.mark_text(sample, 1, "brown fox", color="yellow")
+    yellow = [round(c, 2) for c in pdf.COLORS["yellow"]]
+    assert r["color"] == yellow
+    n = pdf.add_note(sample, 1, "n", color="#0000ff")
+    u = pdf.mark_text(sample, 2, "brown fox", style="underline", color="0.5,0.25,0")
+    by = {a["xref"]: a for a in pdf.annotations(sample)}
+    assert by[r["xref"]]["color"] == yellow
+    assert by[n["xref"]]["color"] == [0.0, 0.0, 1.0]
+    assert by[u["xref"]]["color"] == [0.5, 0.25, 0.0]
+    with pytest.raises(ValueError):
+        pdf.mark_text(sample, 1, "fox", color="chartreuse")

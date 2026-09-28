@@ -1,4 +1,4 @@
-"""The MCP server: eight tools over the viewer, selection and pdf backends."""
+"""The MCP server: ten tools over the viewer, selection and pdf backends."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ mcp = FastMCP(
     instructions=(
         "Okular PDF viewer bridge. viewer_state tells you what the user is reading; "
         "selection returns the text under their mouse; annotations collects their "
-        "highlights and notes from the PDF; mark_text and add_note write marks and notes back. "
+        "highlights and notes from the PDF; mark_text, add_note and attach_file write marks, notes and files (e.g. Markdown, Mermaid) back. "
         "Okular keeps unsaved annotations in memory: ask the user to save (Ctrl+S) "
         "before reading annotations or writing one."
     ),
@@ -68,31 +68,61 @@ def annotations(path: str | None = None, page: int | None = None) -> list[dict[s
 
 @mcp.tool()
 def mark_text(text: str, note: str | None = None, style: str = "highlight",
-              note_in_margin: bool = False, path: str | None = None,
-              page: int | None = None) -> dict[str, Any]:
+              note_in_margin: bool = False, color: str | None = None,
+              path: str | None = None, page: int | None = None) -> dict[str, Any]:
     """Mark every occurrence of `text` on a page (default: the one shown) as highlight,
-    underline, squiggly or strikeout, saved into the PDF with a distinct colour/author;
-    quote enough words to be unique. A note sits on the
-    mark, or with note_in_margin on a comment icon in the margin replying to it (least
-    intrusive). The user must save Okular first or their unsaved marks are lost."""
+    underline, squiggly or strikeout, saved into the PDF under a distinct author; quote
+    enough words to be unique. A note sits on the mark, or with note_in_margin on a
+    comment icon in the margin replying to it (least intrusive). `color`: blue, yellow,
+    green, orange, pink, purple, red, cyan, grey, #rrggbb or r,g,b in 0-1 (default light
+    blue; red for strikeout). The user must save Okular first or their unsaved marks are
+    lost."""
     path, page = _current(path, page)
-    result = pdf.mark_text(path, page, text, note, style, note_in_margin)
+    result = pdf.mark_text(path, page, text, note, style, note_in_margin, color=color)
     _reload(path)
     return result
 
 
 @mcp.tool()
 def add_note(note: str, near_text: str | None = None, reply_to: int | None = None,
-             path: str | None = None, page: int | None = None) -> dict[str, Any]:
+             color: str | None = None, path: str | None = None,
+             page: int | None = None) -> dict[str, Any]:
     """Comment icon in the margin: level with `near_text`, or as a threaded reply to the
     annotation `reply_to` (an xref from `annotations`, e.g. to answer the user's own
-    note), else at the top of the page. Same save-Okular-first caveat as mark_text."""
+    note), else at the top of the page. `color` as in mark_text. Same save-Okular-first
+    caveat as mark_text."""
     if not path:
         w = viewer.current()
         path, page = w.path, page or (None if reply_to else w.page)
-    result = pdf.add_note(path, page, note, near_text, reply_to)
+    result = pdf.add_note(path, page, note, near_text, reply_to, color)
     _reload(path)
     return result
+
+
+@mcp.tool()
+def attach_file(name: str, content: str, note: str | None = None,
+                near_text: str | None = None, replace_xref: int | None = None,
+                color: str | None = None, path: str | None = None,
+                page: int | None = None) -> dict[str, Any]:
+    """Embed a text file (e.g. notes.md, diagram.mmd) as a paperclip annotation in the
+    margin, level with `near_text` or at the top of the page; or replace the file of
+    an existing attachment `replace_xref`. Okular saves it via the icon's context menu.
+    Same save-Okular-first caveat as mark_text."""
+    if not path:
+        w = viewer.current()
+        path, page = w.path, page or (None if replace_xref else w.page)
+    result = pdf.attach_file(path, page, name, content, note, near_text, replace_xref, color)
+    _reload(path)
+    return result
+
+
+@mcp.tool()
+def read_attachment(xref: int, path: str | None = None) -> dict[str, Any]:
+    """Contents of a file-attachment annotation (an xref from `annotations` with a
+    `file` field), decoded as text."""
+    if not path:
+        path = viewer.current().path
+    return pdf.read_attachment(path, xref)
 
 
 @mcp.tool()

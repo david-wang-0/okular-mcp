@@ -19,14 +19,19 @@ database and the notes travel with the file.
 | `get_selection(source="primary")` | Text currently selected with the mouse (`primary`), or the clipboard (`clipboard`) |
 | `page_text(path?, page?, to?)` | Text of a page range; defaults to the page shown in Okular |
 | `annotations(path?, page?)` | All saved annotations: page, type, author, highlighted text, note |
-| `mark_text(text, note?, style?, note_in_margin?, path?, page?)` | Mark every occurrence of `text` on the page (quote enough to be unique) as `highlight` (default), `underline`, `squiggly` or `strikeout`, saved incrementally into the PDF. The note sits on the mark, or with `note_in_margin` on a comment icon in the margin that replies to the mark |
-| `add_note(note, near_text?, reply_to?, path?, page?)` | Comment icon in the margin: level with `near_text`, as a threaded reply to annotation `reply_to`, or at the top of the page |
+| `mark_text(text, note?, style?, note_in_margin?, color?, path?, page?)` | Mark every occurrence of `text` on the page (quote enough to be unique) as `highlight` (default), `underline`, `squiggly` or `strikeout`, saved incrementally into the PDF. The note sits on the mark, or with `note_in_margin` on a comment icon in the margin that replies to the mark |
+| `add_note(note, near_text?, reply_to?, color?, path?, page?)` | Comment icon in the margin: level with `near_text`, as a threaded reply to annotation `reply_to`, or at the top of the page |
+| `attach_file(name, content, note?, near_text?, replace_xref?, color?, path?, page?)` | Embed a text file (`notes.md`, `diagram.mmd`, ...) as a paperclip annotation in the margin, or replace the file of an existing attachment. Okular saves it from the icon's context menu |
+| `read_attachment(xref, path?)` | Contents of a file-attachment annotation, decoded as text |
 | `remove_annotation(xref, path?)` | Delete an annotation by the `xref` that `annotations` reports, saved incrementally |
 | `goto(page, path?)` | Jump Okular to a page, opening the document first if needed |
 
 Marks written by the server carry a distinct author (`llm`, override with
 `OKULAR_MCP_AUTHOR`) and a light-blue colour (blue for underlines and notes, red for strikeout), so they
-are told apart from yours.
+are told apart from yours. Every writing tool takes `color`: a palette name (`blue`,
+`yellow`, `green`, `orange`, `pink`, `purple`, `red`, `cyan`, `grey`), `#rrggbb`, or
+`r,g,b` in 0–1, so a session can keep colours consistent by usage (one for
+definitions, another for open questions).
 
 ## Requirements
 
@@ -68,12 +73,15 @@ Any other client: run `okular-mcp` as a stdio server.
    (`get_selection`).
 4. Let it mark back (`mark_text`; `style="underline"` with `note_in_margin` is the
    least intrusive), answer a note of yours as a threaded reply (`add_note` with
-   `reply_to`), or clean up its own marks (`remove_annotation`). The server saves incrementally and asks Okular to
+   `reply_to`), attach a Markdown or Mermaid file next to a passage
+   (`attach_file`, read back with `read_attachment`), or clean up its own marks
+   (`remove_annotation`). The server saves incrementally and asks Okular to
    reload, so the change appears in the viewer.
 
 ## Gotchas
 
-- **Save before any writing tool** (`mark_text`, `add_note`, `remove_annotation`). If Okular has unsaved annotations when the
+- **Save before any writing tool** (`mark_text`, `add_note`, `attach_file`,
+  `remove_annotation`). If Okular has unsaved annotations when the
   file changes on disk, it offers a reload and the unsaved marks are lost if
   you accept. The tool descriptions tell the model to ask you to save first.
 - **Tabs.** With several documents in tabs of one window, Okular's D-Bus
