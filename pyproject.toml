@@ -1,0 +1,35 @@
+[project]
+name = "okular-mcp"
+version = "0.1.0"
+description = "MCP server exposing the Okular PDF viewer: current document and page, live text selection, page text, and PDF annotations (read and write) so an LLM can read and annotate alongside you."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "David Wang" }]
+keywords = ["mcp", "okular", "pdf", "annotations", "kde", "dbus"]
+classifiers = [
+  "Environment :: X11 Applications :: KDE",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing",
+]
+dependencies = [
+  "mcp>=1.2",
+  "pymupdf>=1.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/david-wang-0/okular-mcp"
+
+[project.scripts]
+okular-mcp = "okular_mcp.server:main"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["okular_mcp"]
