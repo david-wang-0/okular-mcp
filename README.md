@@ -20,6 +20,7 @@ database and the notes travel with the file.
 | `page_text(path?, page?, to?)` | Text of a page range; defaults to the page shown in Okular |
 | `annotations(path?, page?)` | All saved annotations: page, type, author, highlighted text, note |
 | `add_highlight(text, note?, path?, page?)` | Highlight `text` on a page with an optional note, saved incrementally into the PDF |
+| `remove_annotation(xref, path?)` | Delete an annotation by the `xref` that `annotations` reports, saved incrementally |
 | `goto(page, path?)` | Jump Okular to a page, opening the document first if needed |
 
 Highlights written by the server carry a distinct author (`llm`, override with
@@ -63,12 +64,13 @@ Any other client: run `okular-mcp` as a stdio server.
 3. Ask the LLM to collect the highlights (`annotations`), discuss the page you
    are on (`viewer_state`, `page_text`), or explain the phrase under your mouse
    (`get_selection`).
-4. Let it highlight back (`add_highlight`). The server saves incrementally and
-   asks Okular to reload, so the new mark appears in the viewer.
+4. Let it highlight back (`add_highlight`) or clean up its own marks
+   (`remove_annotation`). The server saves incrementally and asks Okular to
+   reload, so the change appears in the viewer.
 
 ## Gotchas
 
-- **Save before `add_highlight`.** If Okular has unsaved annotations when the
+- **Save before `add_highlight` or `remove_annotation`.** If Okular has unsaved annotations when the
   file changes on disk, it offers a reload and the unsaved marks are lost if
   you accept. The tool descriptions tell the model to ask you to save first.
 - **Tabs.** With several documents in tabs of one window, Okular's D-Bus

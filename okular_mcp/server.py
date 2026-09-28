@@ -1,4 +1,4 @@
-"""The MCP server: six tools over the viewer, selection and pdf backends."""
+"""The MCP server: seven tools over the viewer, selection and pdf backends."""
 
 from __future__ import annotations
 
@@ -67,6 +67,20 @@ def add_highlight(text: str, note: str | None = None, path: str | None = None,
     their unsaved marks are lost on reload."""
     path, page = _current(path, page)
     result = pdf.add_highlight(path, page, text, note)
+    try:
+        viewer.reload(path)
+    except viewer.ViewerError:
+        pass
+    return result
+
+
+@mcp.tool()
+def remove_annotation(xref: int, path: str | None = None) -> dict[str, Any]:
+    """Delete an annotation by the `xref` reported by `annotations` (default: the open
+    document) and save. Same save-in-Okular-first caveat as add_highlight."""
+    if not path:
+        path = viewer.current().path
+    result = pdf.remove_annotation(path, xref)
     try:
         viewer.reload(path)
     except viewer.ViewerError:

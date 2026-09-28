@@ -41,3 +41,15 @@ def test_highlight_roundtrip(sample):
 def test_highlight_missing(sample):
     with pytest.raises(LookupError):
         pdf.add_highlight(sample, 1, "no such words here")
+
+
+def test_remove(sample):
+    pdf.add_highlight(sample, 1, "quick brown")
+    xref = pdf.add_highlight(sample, 2, "lazy dog")["xref"]
+    assert len(pdf.annotations(sample)) == 2
+    r = pdf.remove_annotation(sample, xref)
+    assert r["page"] == 2 and r["type"] == "Highlight"
+    left = pdf.annotations(sample)
+    assert len(left) == 1 and left[0]["text"] == "quick brown"
+    with pytest.raises(LookupError):
+        pdf.remove_annotation(sample, xref)

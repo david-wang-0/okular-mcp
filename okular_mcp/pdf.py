@@ -115,3 +115,22 @@ def add_highlight(path: str, page: int, text: str, note: str | None = None,
         return {"page": page, "xref": annot.xref, "text": text, "note": note or "", "author": author}
     finally:
         doc.close()
+
+
+def remove_annotation(path: str, xref: int, page: int | None = None) -> dict[str, Any]:
+    """Delete the annotation with PDF object number ``xref`` and save incrementally."""
+    doc = _open(path)
+    try:
+        pages = [page] if page else range(1, doc.page_count + 1)
+        for n in pages:
+            pg = doc[n - 1]
+            for annot in pg.annots():
+                if annot.xref == xref:
+                    info = {"page": n, "xref": xref, "type": annot.type[1],
+                            "author": annot.info.get("title", "")}
+                    pg.delete_annot(annot)
+                    doc.saveIncr()
+                    return info
+        raise LookupError(f"no annotation with xref {xref}")
+    finally:
+        doc.close()
