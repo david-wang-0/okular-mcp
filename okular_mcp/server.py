@@ -1,4 +1,4 @@
-"""The MCP server: ten tools over the viewer, selection and pdf backends."""
+"""The MCP server: eleven tools over the viewer, selection and pdf backends."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ mcp = FastMCP(
     "okular",
     instructions=(
         "Okular PDF viewer bridge. viewer_state tells you what the user is reading; "
-        "selection returns the text under their mouse; annotations collects their "
+        "get_selection returns the text under their mouse and context the paragraph around it; annotations collects their "
         "highlights and notes from the PDF; mark_text, add_note and attach_file write marks, notes and files (e.g. Markdown, Mermaid) back. "
         "Okular keeps unsaved annotations in memory: ask the user to save (Ctrl+S) "
         "before reading annotations or writing one."
@@ -51,10 +51,24 @@ def get_selection(source: str = "primary") -> str:
 
 
 @mcp.tool()
-def page_text(path: str | None = None, page: int | None = None, to: int | None = None) -> str:
-    """Text of a page range. Defaults to the document and page shown in Okular."""
+def page_text(path: str | None = None, page: int | None = None, to: int | None = None,
+              lines: str | None = None) -> str:
+    """Numbered text lines of a page range (default: the page shown in Okular);
+    `lines` such as "12-30" narrows to a window. Line numbers match `context`."""
     path, page = _current(path, page)
-    return pdf.page_text(path, page, to)
+    return pdf.page_text(path, page, to, lines)
+
+
+@mcp.tool()
+def context(neighbours: int = 1, text: str | None = None, path: str | None = None,
+            page: int | None = None) -> dict[str, Any]:
+    """The paragraph around the user's current mouse selection (or `text`) on the page
+    shown, with `neighbours` paragraphs before and after and the line numbers, so you
+    can see what they are pointing at without reading the whole page."""
+    path, page = _current(path, page)
+    if text is None:
+        text = selection.read("primary")
+    return pdf.context(path, page, text, neighbours)
 
 
 @mcp.tool()

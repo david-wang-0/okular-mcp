@@ -17,7 +17,8 @@ database and the notes travel with the file.
 |---|---|
 | `viewer_state()` | Every open Okular window: document path, current page (1-based), page count |
 | `get_selection(source="primary")` | Text currently selected with the mouse (`primary`), or the clipboard (`clipboard`) |
-| `page_text(path?, page?, to?)` | Text of a page range; defaults to the page shown in Okular |
+| `page_text(path?, page?, to?, lines?)` | Numbered text lines of a page range, defaulting to the page shown in Okular; `lines="12-30"` narrows to a window |
+| `context(neighbours?, text?, path?, page?)` | The paragraph around the current mouse selection (or `text`) on the page shown, with neighbouring paragraphs and line numbers |
 | `annotations(path?, page?)` | All saved annotations: page, type, author, highlighted text, note |
 | `mark_text(text, note?, style?, note_in_margin?, color?, path?, page?)` | Mark every occurrence of `text` on the page (quote enough to be unique) as `highlight` (default), `underline`, `squiggly` or `strikeout`, saved incrementally into the PDF. The note sits on the mark, or with `note_in_margin` on a comment icon in the margin that replies to the mark |
 | `add_note(note, near_text?, reply_to?, color?, path?, page?)` | Comment icon in the margin: level with `near_text`, as a threaded reply to annotation `reply_to`, or at the top of the page |
@@ -70,7 +71,7 @@ Any other client: run `okular-mcp` as a stdio server.
    server only sees what is in the file.
 3. Ask the LLM to collect the highlights (`annotations`), discuss the page you
    are on (`viewer_state`, `page_text`), or explain the phrase under your mouse
-   (`get_selection`).
+   in its paragraph (`get_selection`, `context`).
 4. Let it mark back (`mark_text`; `style="underline"` with `note_in_margin` is the
    least intrusive), answer a note of yours as a threaded reply (`add_note` with
    `reply_to`), attach a Markdown or Mermaid file next to a passage
@@ -95,6 +96,9 @@ Any other client: run `okular-mcp` as a stdio server.
   then recovers `DBUS_SESSION_BUS_ADDRESS` and `WAYLAND_DISPLAY` from
   `XDG_RUNTIME_DIR` (or `/run/user/<uid>`), so no per-client `env` block is
   needed on a systemd desktop.
+- **Lines are reconstructed.** A PDF has no lines; `page_text` and `context` use
+  PyMuPDF's block and line grouping, so a two-column page reads column by column
+  and equations or footnotes can land in odd places.
 - Highlighted text is recovered from the annotation's quads, so it can pick
   up a neighbouring word on tight line spacing.
 

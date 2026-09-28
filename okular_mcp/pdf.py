@@ -67,16 +67,92 @@ def _open(path: str) -> pymupdf.Document:
     return pymupdf.open(path)
 
 
-def page_text(path: str, page: int, to: int | None = None) -> str:
-    """Text of pages ``page``..``to`` (1-based, inclusive), pages separated by a marker."""
+def _lines(pg: pymupdf.Page) -> list[dict[str, Any]]:
+    """The page's text lines in reading order, numbered from 1, with their block.
+
+    Lines come from PyMuPDF's block/line structure (grouped by position), so a
+    two-column page yields the left column first, then the right.
+    """
+    out: list[dict[str, Any]] = []
+    for b, block in enumerate(pg.get_text("dict")["blocks"]):
+        for line in block.get("lines", []):
+            text = "".join(span["text"] for span in line["spans"]).strip()
+            if text:
+                out.append({"n": len(out) + 1, "text": text, "block": b,
+                            "bbox": pymupdf.Rect(line["bbox"])})
+    return out
+
+
+def _parse_range(spec: str | None, count: int) -> tuple[int, int]:
+    if not spec:
+        return 1, count
+    a, _, b = spec.partition("-")
+    try:
+        lo = int(a) if a.strip() else 1
+        hi = int(b) if b.strip() else count
+    except ValueError as e:
+        raise ValueError(f"lines must look like '12-30', '12-' or '-30', not {spec!r}") from e
+    if lo < 1 or hi < lo:
+        raise ValueError(f"bad line range {spec!r}")
+    return lo, min(hi, count)
+
+
+def page_text(path: str, page: int, to: int | None = None, lines: str | None = None) -> str:
+    """Numbered text lines of pages ``page``..``to`` (1-based, inclusive).
+
+    ``lines`` narrows to a window such as ``"12-30"`` (per page). Numbers are
+    per page and match what ``context`` reports.
+    """
     with _open(path) as doc:
         last = to or page
         if not 1 <= page <= last <= doc.page_count:
             raise ValueError(f"page range {page}-{last} outside 1-{doc.page_count}")
         parts = []
         for n in range(page, last + 1):
-            parts.append(f"--- page {n} ---\n{doc[n - 1].get_text()}")
+            ls = _lines(doc[n - 1])
+            lo, hi = _parse_range(lines, len(ls))
+            body = "\n".join(f"{l['n']}: {l['text']}" for l in ls[lo - 1:hi])
+            parts.append(f"--- page {n} ({len(ls)} lines) ---\n{body}")
         return "\n".join(parts)
+
+
+def context(path: str, page: int, text: str, neighbours: int = 1) -> dict[str, Any]:
+    """The paragraph containing ``text`` on ``page``, with ``neighbours`` blocks
+    before and after, and the line numbers involved."""
+    needle = " ".join(text.split())
+    if not needle:
+        raise ValueError("nothing selected: select text with the mouse first")
+    with _open(path) as doc:
+        if not 1 <= page <= doc.page_count:
+            raise ValueError(f"page {page} outside 1-{doc.page_count}")
+        pg = doc[page - 1]
+        hits = pg.search_for(needle)
+        if not hits:
+            # Long selections can cross columns or pages: fall back to their first words.
+            hits = pg.search_for(" ".join(needle.split()[:6]))
+        if not hits:
+            raise LookupError(f"selection not found on page {page}: {needle[:60]!r}")
+        ls = _lines(pg)
+        hit_lines = [l for l in ls if any(l["bbox"].intersects(h) for h in hits)]
+        if not hit_lines:
+            raise LookupError("selection found but not attributable to a text line")
+        blocks = sorted({l["block"] for l in hit_lines})
+        lo_b, hi_b = blocks[0] - neighbours, blocks[-1] + neighbours
+
+        def para(b0: int, b1: int) -> str:
+            return "\n".join(l["text"] for l in ls if b0 <= l["block"] <= b1)
+
+        first = min(l["n"] for l in ls if blocks[0] <= l["block"] <= blocks[-1])
+        last = max(l["n"] for l in ls if blocks[0] <= l["block"] <= blocks[-1])
+        return {
+            "page": page,
+            "selection": needle,
+            "lines": f"{hit_lines[0]['n']}-{hit_lines[-1]['n']}",
+            "paragraph_lines": f"{first}-{last}",
+            "before": para(lo_b, blocks[0] - 1) if neighbours else "",
+            "paragraph": para(blocks[0], blocks[-1]),
+            "after": para(blocks[-1] + 1, hi_b) if neighbours else "",
+        }
 
 
 def _marked_text(pg: pymupdf.Page, annot: pymupdf.Annot) -> str:

@@ -19,11 +19,35 @@ def sample(tmp_path):
 
 def test_page_text(sample):
     out = pdf.page_text(sample, 2)
-    assert "--- page 2 ---" in out and "Page 2 first line" in out
+    assert out.startswith("--- page 2 (2 lines) ---\n1: Page 2 first line") and "2: The quick" in out
     assert "Page 1" not in out
     assert "Page 1" in pdf.page_text(sample, 1, 2)
+    assert pdf.page_text(sample, 1, lines="2-").splitlines()[1:] == ["2: The quick brown fox jumps over the lazy dog."]
+    assert pdf.page_text(sample, 1, lines="-1").count("\n") == 1
     with pytest.raises(ValueError):
         pdf.page_text(sample, 3)
+    with pytest.raises(ValueError):
+        pdf.page_text(sample, 1, lines="x")
+
+
+def test_context(tmp_path):
+    path = tmp_path / "c.pdf"
+    doc = pymupdf.open()
+    pg = doc.new_page()
+    y = 72
+    for para in ("Intro para line one.\nIntro para line two.", "Body para says the fox\njumps high.", "Closing para here."):
+        pg.insert_text((72, y), para)
+        y += 60
+    doc.save(path); doc.close()
+    c = pdf.context(str(path), 1, "the  fox\njumps")
+    assert c["paragraph"] == "Body para says the fox\njumps high."
+    assert c["before"] == "Intro para line one.\nIntro para line two." and c["after"] == "Closing para here."
+    assert c["lines"] == "3-4" and c["paragraph_lines"] == "3-4"
+    assert pdf.context(str(path), 1, "fox", neighbours=0)["before"] == ""
+    with pytest.raises(LookupError):
+        pdf.context(str(path), 1, "not on this page at all")
+    with pytest.raises(ValueError):
+        pdf.context(str(path), 1, "  ")
 
 
 def test_highlight_roundtrip(sample):
