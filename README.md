@@ -92,7 +92,10 @@ Any other client: run `okular-mcp` as a stdio server.
 - **Tabs.** With several documents in tabs of one window, Okular's D-Bus
   interface reports the first-opened tab, not the active one
   ([KDE bug 502482](https://bugs.kde.org/show_bug.cgi?id=502482)). Use
-  separate windows if you rely on `viewer_state`.
+  separate windows if you rely on `viewer_state`: the process registers a single
+  `/okular` object, so other tabs are not reachable over D-Bus at all. With the
+  vscode-pdf-external-open extension, run it without `--unique` (one window per
+  PDF) and leave `--unique` to the LaTeX build viewer only; see that README.
 - **Selection text is Okular's text layer**, returned verbatim: hyphenation
   and column order can be messy.
 - **Minimal client environments.** Some MCP clients (Codex, the Python SDK's
