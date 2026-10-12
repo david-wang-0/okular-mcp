@@ -1,10 +1,12 @@
 import os
+import re
 import subprocess
 
 import pytest
 
 from conftest import DBUS
 from okular_mcp import viewer
+from okular_mcp.viewer import ViewerError
 
 
 def entry(window, path, page, pages, active):
@@ -131,6 +133,26 @@ def test_c3_out_of_range_raised_before_goto(two_windows, pdfs):
         viewer.goto(6, pdfs["c"])
     assert ("org.kde.okular-100", "openDocument", pdfs["c"]) in two_windows.methods()
     assert not [m for m in two_windows.methods() if m[1] == "goToPage"]
+
+
+def test_c3_load_failure_is_cannot_open_before_the_page_check(two_windows, pdfs):
+    two_windows.docs[pdfs["c"]] = None
+    with pytest.raises(ViewerError, match=rf"^cannot open {re.escape(pdfs['c'])}$"):
+        viewer.goto(99, pdfs["c"])
+    assert not [m for m in two_windows.methods() if m[1] == "goToPage"]
+
+
+def test_c3_load_failure_leaving_the_old_document_is_cannot_open(two_windows, pdfs, monkeypatch):
+    original = two_windows.__class__.__call__
+
+    def refusing(self, *args):
+        if args and args[2:3] == ("org.kde.okular.openDocument",):
+            self.calls.append(args)
+            return ""
+        return original(self, *args)
+    monkeypatch.setattr(two_windows.__class__, "__call__", refusing)
+    with pytest.raises(ViewerError, match=r"^cannot open "):
+        viewer.goto(1, pdfs["c"])
 
 
 def test_c3_no_such_file_before_any_okular_call(two_windows, tmp_path):

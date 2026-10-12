@@ -46,8 +46,9 @@ when nothing is selected. The primary selection is system-wide: it is whatever
 was last selected in any window, so it is attributed to Okular's active
 document on trust.
 
-`goto` fails with `no such file: <path>` for a path that does not exist and with
-`page N outside 1-M` before moving if the page is out of range.
+`goto` fails with `no such file: <path>` for a path that does not exist, `cannot open <path>`
+if Okular fails to load it, and `page N outside 1-M` before moving if the page is out of
+range.
 
 Errors reach the model as their message (as an MCP tool error), not as a
 generic "Error executing tool".

@@ -144,8 +144,9 @@ def _same(a: str, b: str) -> bool:
 def goto(page: int, path: str | None = None) -> dict[str, Any]:
     """C3: show ``page`` (1-based) of ``path`` (default: the active entry's document).
 
-    Opens ``path`` in the first Okular window if no window shows it, checks ``page``
-    against that document's page count, then moves; returns the document's entry.
+    Opens ``path`` in the first Okular window if no window shows it (``cannot open``
+    if Okular fails to load it), checks ``page`` against that document's page count,
+    then moves; returns the document's entry.
     """
     if path is None:
         w = _open_windows()[0]
@@ -160,6 +161,10 @@ def goto(page: int, path: str | None = None) -> dict[str, Any]:
         if w is None:
             w = ws[0]
             _okular(w.service, "openDocument", path)
+            # openDocument returns nothing: a load failure shows as another (or no) document.
+            shown = _okular(w.service, "currentDocument")
+            if not shown or not _same(shown, path) or _int(_okular(w.service, "pages")) < 1:
+                raise ViewerError(f"cannot open {path}")
     pages = _int(_okular(w.service, "pages"))
     if not 1 <= page <= pages:
         raise ValueError(f"page {page} outside 1-{pages}")

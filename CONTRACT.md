@@ -32,7 +32,12 @@ unit tests in each repository, named after the clause (`test_c3_...` in Python,
 **C1. `viewer_state()`** returns the list of entries, the active one first, with
 `active: true` on exactly that one and `false` on the rest. If no window has a document
 open (including the viewer not running), it raises a tool error whose message starts
-`no <viewer> window with a PDF open` (`<viewer>` = `Okular` or `VS Code`).
+`no <viewer> window with a PDF open` (`<viewer>` = `Okular` or `VS Code`), optionally
+followed by a cause in brackets, e.g. ` (Okular is not running on the session bus)`.
+
+All error messages in this contract are the server's own text. An MCP SDK may put a
+prefix in front of it (the Python SDK reports `Error executing tool <name>: <message>`);
+"starts" and quoted messages refer to the text after any such prefix.
 
 **C2. `get_selection(source="primary")`** returns
 `{"text": str, "source": str}` plus `viewer`, `path` and `page` when the selection can be
@@ -48,7 +53,9 @@ attributed to a document. `text` is `""` when nothing is selected (not an error)
 document), opening the document first if no window has it open, and returns the entry of
 the document after the move, with `page` equal to the requested page.
 - Errors: `page N outside 1-M` for a page out of range; `no such file: <path>` for a path
-  that does not exist; C1's message if `path` is omitted and nothing is open.
+  that does not exist; `cannot open <path>` for a file the viewer fails to load (checked
+  before the page range); C1's message if `path` is omitted and nothing is open.
+- Paths are compared after resolving symlinks (realpath).
 - Agents call it only when the user asks to be shown a place.
 
 **C4.** The servers never write to the PDF and have no reload tool. Both viewers watch the

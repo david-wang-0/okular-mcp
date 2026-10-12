@@ -14,7 +14,8 @@ READS = ("currentDocument", "currentPage", "pages")
 class Bus:
     """``procs`` maps pid -> {"path", "page", "pages"}; ``names`` maps D-Bus name -> pid
     (None makes the pid lookup fail). ``broken`` pids fail their property calls.
-    ``docs`` maps a path to its page count, for openDocument (default 9 pages).
+    ``docs`` maps a path to its page count, for openDocument (default 9 pages; None
+    makes the load fail: Okular is then left with no document).
     """
 
     def __init__(self, procs, names, broken=(), docs=None):
@@ -42,7 +43,8 @@ class Bus:
         if name in ("currentPage", "pages"):
             return str(p["page" if name == "currentPage" else "pages"])
         if name == "openDocument":
-            p.update(path=rest[0], page=1, pages=self.docs.get(rest[0], 9))
+            n = self.docs.get(rest[0], 9)
+            p.update(path=rest[0], page=1, pages=n) if n else p.update(path="", page=0, pages=0)
         elif name == "goToPage":
             p["page"] = int(rest[0])
         else:

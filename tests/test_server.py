@@ -136,6 +136,11 @@ def test_c3_no_such_file_reaches_caller_verbatim(two_windows, tmp_path):
     assert two_windows.calls == []
 
 
+def test_c3_cannot_open_reaches_caller_verbatim(two_windows, pdfs):
+    two_windows.docs[pdfs["c"]] = None
+    assert _tool_error("goto", {"page": 1, "path": pdfs["c"]}) == f"cannot open {pdfs['c']}"
+
+
 def test_c3_nothing_open_reaches_caller_as_c1(no_okular):
     assert _tool_error("goto", {"page": 1}).startswith("no Okular window with a PDF open")
 
