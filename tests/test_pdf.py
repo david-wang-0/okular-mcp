@@ -166,3 +166,175 @@ def test_links_and_outline(tmp_path):
     assert uri["url"] == "https://example.org" and uri["text"] == "site." and uri["line"] == 1
     assert pdf.page_text(str(path), 2, lines="2-2").endswith("2: [1] The cited work.")
     assert pdf.links(str(path), 2) == []
+
+
+# --- edge cases and gaps ---
+
+def test_parse_range_edges():
+    assert pdf._parse_range(None, 7) == (1, 7) and pdf._parse_range("", 7) == (1, 7)
+    assert pdf._parse_range("3-", 7) == (3, 7) and pdf._parse_range("-4", 7) == (1, 4)
+    assert pdf._parse_range("2-99", 5) == (2, 5)  # hi clamped to the line count
+    for bad in ("3-1", "0-2", "a-b"):
+        with pytest.raises(ValueError):
+            pdf._parse_range(bad, 10)
+
+
+def test_page_text_to_before_page_raises(sample):
+    with pytest.raises(ValueError):
+        pdf.page_text(sample, 2, to=1)
+    with pytest.raises(ValueError):
+        pdf.page_text(sample, 1, to=3)
+
+
+@pytest.mark.parametrize("page", [0, 3])
+def test_out_of_range_page_raises_value_error(sample, page):
+    calls = [
+        lambda: pdf.context(sample, page, "fox"),
+        lambda: pdf.links(sample, page),
+        lambda: pdf.mark_text(sample, page, "fox"),
+        lambda: pdf.add_note(sample, page, "n"),
+        lambda: pdf.attach_file(sample, page, "a.md", "x"),
+    ]
+    for call in calls:
+        with pytest.raises(ValueError):
+            call()
+    assert pdf.annotations(sample) == []
+
+
+def test_note_and_attachment_need_a_page_or_target(sample):
+    with pytest.raises(ValueError, match="reply_to"):
+        pdf.add_note(sample, None, "n")
+    with pytest.raises(ValueError, match="replace_xref"):
+        pdf.attach_file(sample, None, "a.md", "x")
+    h = pdf.mark_text(sample, 1, "lazy dog")["xref"]
+    with pytest.raises(ValueError, match="not a file attachment"):
+        pdf.attach_file(sample, None, "a.md", "x", replace_xref=h)
+    with pytest.raises(LookupError):
+        pdf.attach_file(sample, None, "a.md", "x", replace_xref=999999)
+
+
+def _annot_rects(path, page):
+    with pymupdf.open(path) as doc:
+        pg = doc[page - 1]
+        return {a.xref: pymupdf.Rect(a.rect) for a in pg.annots()}, [b[:4] for b in pg.get_text("blocks")]
+
+
+def test_attach_file_top_of_page_in_left_margin(sample):
+    r = pdf.attach_file(sample, 2, "a.md", "x")
+    assert r == {"page": 2, "xref": r["xref"], "name": "a.md", "bytes": 1, "note": ""}
+    rects, blocks = _annot_rects(sample, 2)
+    top = min(b[1] for b in blocks)
+    assert rects[r["xref"]].x0 < min(b[0] for b in blocks) and abs(rects[r["xref"]].y0 - (top - 2)) < 1
+
+
+def test_margin_notes_left_of_text_block(sample):
+    m = pdf.mark_text(sample, 1, "lazy dog", note="n", note_in_margin=True)
+    a = pdf.add_note(sample, 1, "near", near_text="brown fox")
+    t = pdf.add_note(sample, 1, "top")
+    rects, blocks = _annot_rects(sample, 1)
+    left = min(b[0] for b in blocks)
+    assert all(rects[x].x0 < left for x in (m["note_xref"], a["xref"], t["xref"]))
+    # level with the marked line, not the top of the page
+    assert rects[m["note_xref"]].y0 > rects[t["xref"]].y0
+
+
+def test_highlight_across_line_break(tmp_path):
+    """A mark over a wrapped phrase is one annot with one quad per line; its text is the whole words once, in order."""
+    path = str(tmp_path / "w.pdf")
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Body para says the fox\njumps high over it.")
+    doc.save(path); doc.close()
+    r = pdf.mark_text(path, 1, "the fox\njumps")
+    assert r["text"] == "the fox\njumps"
+    with pymupdf.open(path) as doc:
+        pg = doc[0]
+        assert len(next(pg.annots()).vertices) == 8
+    (a,) = pdf.annotations(path)
+    assert a["text"] == "the fox jumps"
+
+
+def test_mark_text_marks_every_occurrence_in_one_annot(tmp_path):
+    path = str(tmp_path / "d.pdf")
+    doc = pymupdf.open()
+    pg = doc.new_page()
+    pg.insert_text((72, 72), "A brown fox ran.")
+    pg.insert_text((72, 200), "Then another brown fox sat.")
+    doc.save(path); doc.close()
+    pdf.mark_text(path, 1, "brown fox")
+    (a,) = pdf.annotations(path)
+    assert a["text"] == "brown fox brown fox"
+
+
+def test_note_on_mark_without_margin(sample):
+    r = pdf.mark_text(sample, 1, "lazy dog", note="on the mark", note_in_margin=False)
+    assert "note_xref" not in r and r["note"] == "on the mark"
+    (a,) = pdf.annotations(sample)
+    assert a["note"] == "on the mark" and a["xref"] == r["xref"]
+
+
+def test_margin_flag_without_note_adds_no_icon(sample):
+    r = pdf.mark_text(sample, 1, "lazy dog", note_in_margin=True)
+    assert "note_xref" not in r and len(pdf.annotations(sample)) == 1
+
+
+def test_remove_annotation_explicit_page(sample):
+    x = pdf.add_note(sample, 2, "n")["xref"]
+    with pytest.raises(LookupError):
+        pdf.remove_annotation(sample, x, page=1)
+    assert pdf.remove_annotation(sample, x, page=2) == {"page": 2, "xref": x, "type": "Text",
+                                                          "author": pdf.DEFAULT_AUTHOR}
+    assert pdf.annotations(sample) == []
+
+
+def test_annotations_modified_and_reply_to(sample):
+    a = pdf.add_note(sample, 1, "root")
+    b = pdf.add_note(sample, None, "reply", reply_to=a["xref"])
+    by = {x["xref"]: x for x in pdf.annotations(sample)}
+    assert all(x["modified"].startswith("D:") for x in by.values())
+    assert "reply_to" not in by[a["xref"]] and by[b["xref"]]["reply_to"] == a["xref"]
+    assert "text" not in by[a["xref"]]  # only markup annots carry the marked text
+
+
+def test_links_named_destination(tmp_path):
+    """A /GoTo link to a named destination reports page, dest name and the target line (PDF y flipped)."""
+    path = str(tmp_path / "n.pdf")
+    doc = pymupdf.open()
+    doc.new_page(), doc.new_page()
+    p1, p2 = doc[0], doc[1]
+    p1.insert_text((72, 72), "See Section two here.")
+    p2.insert_text((72, 72), "Heading on page two.")
+    p2.insert_text((72, 300), "Target line.")
+    h = p2.rect.height
+    doc.xref_set_key(doc.pdf_catalog(), "Dests", f"<</sec2 [{doc.page_xref(1)} 0 R /XYZ 72 {h - 290} 0]>>")
+    words = {w[4]: pymupdf.Rect(w[:4]) for w in p1.get_text("words")}
+    p1.insert_link({"kind": pymupdf.LINK_NAMED, "from": words["Section"], "name": "sec2"})
+    doc.save(path); doc.close()
+    assert pdf.links(path, 1) == [{"text": "Section", "line": 1, "page": 2, "dest": "sec2", "target_line": 2}]
+
+
+def test_default_author_from_env(sample, monkeypatch):
+    import importlib
+    monkeypatch.setenv("OKULAR_MCP_AUTHOR", "reviewer")
+    try:
+        importlib.reload(pdf)
+        assert pdf.DEFAULT_AUTHOR == "reviewer"
+        pdf.mark_text(sample, 1, "lazy dog")
+        assert pdf.annotations(sample)[0]["author"] == "reviewer"
+        monkeypatch.delenv("OKULAR_MCP_AUTHOR")
+        importlib.reload(pdf)
+        assert pdf.DEFAULT_AUTHOR == "llm"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(pdf)
+
+
+@pytest.mark.xfail(strict=True, reason="annotations/remove_annotation with an out-of-range page raise "
+                   "pymupdf's IndexError ('page 4 not in document' for page 5) instead of ValueError "
+                   "'page 5 outside 1-N' like every other page-taking function")
+@pytest.mark.parametrize("call", ["annotations", "remove_annotation"])
+def test_annotations_out_of_range_page_raises_value_error(sample, call):
+    with pytest.raises(ValueError, match="page 3 outside 1-2"):
+        if call == "annotations":
+            pdf.annotations(sample, 3)
+        else:
+            pdf.remove_annotation(sample, 1, page=3)
