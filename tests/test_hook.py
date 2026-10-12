@@ -117,6 +117,17 @@ def test_c7_exact_text_without_selection(monkeypatch, capsys, two_windows, pdfs)
     assert "SELECTED TEXT" not in out and "Selected text" not in out
 
 
+def test_c7_no_source_line_even_with_a_selection_and_synctex(monkeypatch, capsys, two_windows, pdfs):
+    base = pdfs["a"][:-len(".pdf")]
+    for ext in (".synctex.gz", ".tex"):
+        open(base + ext, "w").close()
+    monkeypatch.setattr(selection, "read", lambda source="primary": "lazy dog")
+    _, out = run(monkeypatch, capsys, event(os.path.dirname(pdfs["a"])))
+    text = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert text == f"The user is reading {pdfs['a']} in Okular, page 3 of 10."
+    assert "Source:" not in out and "lazy dog" not in out
+
+
 # --- C8: only the active entry, only inside cwd ---
 
 def test_c8_pdf_inside_cwd(monkeypatch, capsys, two_windows, pdfs, tmp_path):

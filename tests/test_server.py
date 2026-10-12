@@ -73,6 +73,18 @@ def test_c2_primary_attributed_to_active_entry(two_windows, pdfs, sel):
     assert sel.reads == ["primary"]
 
 
+def test_c2_never_reports_tex_even_with_a_synctex_file(two_windows, pdfs, sel, monkeypatch):
+    """Okular reports no selection position, so there is nothing to map through SyncTeX."""
+    base = pdfs["a"][:-len(".pdf")]
+    for ext in (".synctex.gz", ".synctex", ".tex"):
+        open(base + ext, "w").close()
+    sel.text = "lazy dog"
+    for source in ("primary", "clipboard"):
+        assert "tex" not in server.get_selection(source)
+    monkeypatch.setattr(selection, "read", lambda source="primary": "")
+    assert "tex" not in server.get_selection()
+
+
 def test_c2_primary_without_active_entry_is_unattributed_not_an_error(no_okular, sel):
     sel.text = "words"
     assert server.get_selection("primary") == {"text": "words", "source": "primary"}
