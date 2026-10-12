@@ -242,3 +242,50 @@ def test_tool_annotation_hints():
     assert {n for n, h in hints.items() if h["destructiveHint"]} == {"remove_annotation"}
     for n in ("mark_text", "add_note", "attach_file", "goto"):
         assert hints[n]["readOnlyHint"] is False and hints[n]["destructiveHint"] is False
+
+
+# --- errors reach the model verbatim, as ToolError (mcp >= 2 hides anything else) ---
+
+def _call(name, args):
+    return asyncio.run(server.mcp.call_tool(name, args))
+
+
+def _tool_error(name, args):
+    """The text the model sees. mcp 2.3 raises ToolError from call_tool, prefixed with
+    "Error executing tool <name>: ", and turns it into an isError result with that text;
+    a crash would be an UnexpectedToolError carrying the prefix alone."""
+    with pytest.raises(server.ToolError) as e:
+        _call(name, args)
+    assert type(e.value) is server.ToolError  # not UnexpectedToolError
+    prefix = f"Error executing tool {name}: "
+    assert str(e.value).startswith(prefix)
+    return str(e.value)[len(prefix):]
+
+
+def test_viewer_error_reaches_caller_as_tool_error(fake):
+    fake(fail=True)
+    assert _tool_error("page_text", {}) == "no Okular window"
+
+
+def test_pdf_value_error_reaches_caller_as_tool_error(fake, sample):
+    fake()
+    assert _tool_error("links", {"path": sample, "page": 9}) == "page 9 outside 1-2"
+
+
+def test_selection_error_reaches_caller_as_tool_error(fake, monkeypatch):
+    fake()
+    monkeypatch.setattr(selection, "read", lambda source="primary": (_ for _ in ()).throw(
+        selection.SelectionError("source must be 'primary' or 'clipboard'")))
+    assert _tool_error("get_selection", {"source": "x"}) == "source must be 'primary' or 'clipboard'"
+
+
+def test_missing_file_reaches_caller_as_tool_error(fake, tmp_path):
+    fake()
+    gone = str(tmp_path / "gone.pdf")
+    assert gone in _tool_error("outline", {"path": gone})
+
+
+def test_direct_calls_keep_original_exception_types(fake, sample):
+    fake()
+    with pytest.raises(ValueError, match="page 9 outside 1-2"):
+        server.links(sample, 9)

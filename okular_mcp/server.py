@@ -1,14 +1,17 @@
-"""The MCP server: twelve tools over the viewer, selection and pdf backends."""
+"""The MCP server: thirteen tools over the viewer, selection and pdf backends."""
 
 from __future__ import annotations
 
+import functools
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
 try:  # mcp >= 2: FastMCP was renamed MCPServer
     from mcp.server.mcpserver import MCPServer as FastMCP
+    from mcp.server.mcpserver.exceptions import ToolError
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp.types import ToolAnnotations
 
@@ -32,6 +35,25 @@ mcp = FastMCP(
 )
 
 
+def tool(title: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register a tool whose anticipated failures reach the model as their message.
+
+    mcp >= 2 shows the model only "Error executing tool <name>" for any exception
+    but ToolError, which would hide "page 9 outside 1-4" or "no Okular window found".
+    ViewerError and SelectionError are RuntimeErrors, so they are covered too.
+    """
+    def register(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return fn(*args, **kwargs)
+            except (ValueError, LookupError, OSError, RuntimeError) as e:
+                raise ToolError(str(e)) from e
+        mcp.tool(title=title, annotations=annotations)(wrapper)
+        return fn  # direct (Python) callers keep the original exception types
+    return register
+
+
 def _current(path: str | None, page: int | None) -> tuple[str, int]:
     if path and page:
         return path, page
@@ -46,7 +68,7 @@ def _reload(path: str) -> None:
         pass
 
 
-@mcp.tool(title="Okular: open documents and pages", annotations=READ)
+@tool(title="Okular: open documents and pages", annotations=READ)
 def viewer_state() -> list[dict[str, Any]]:
     """Which PDF and page Okular is showing.
 
@@ -54,7 +76,7 @@ def viewer_state() -> list[dict[str, Any]]:
     return [asdict(w) for w in viewer.windows()]
 
 
-@mcp.tool(title="Okular: mouse selection", annotations=READ)
+@tool(title="Okular: mouse selection", annotations=READ)
 def get_selection(source: str = "primary") -> dict[str, Any]:
     """Text the user has selected with the mouse, with page and lines.
 
@@ -71,7 +93,7 @@ def get_selection(source: str = "primary") -> dict[str, Any]:
     return result
 
 
-@mcp.tool(title="PDF: page text, numbered lines", annotations=READ)
+@tool(title="PDF: page text, numbered lines", annotations=READ)
 def page_text(path: str | None = None, page: int | None = None, to: int | None = None,
               lines: str | None = None) -> str:
     """Numbered text lines of a page range.
@@ -81,7 +103,7 @@ def page_text(path: str | None = None, page: int | None = None, to: int | None =
     return pdf.page_text(path, page, to, lines)
 
 
-@mcp.tool(title="PDF: paragraph around the selection", annotations=READ)
+@tool(title="PDF: paragraph around the selection", annotations=READ)
 def context(neighbours: int = 1, text: str | None = None, path: str | None = None,
             page: int | None = None) -> dict[str, Any]:
     """The paragraph around the user's mouse selection.
@@ -93,7 +115,7 @@ def context(neighbours: int = 1, text: str | None = None, path: str | None = Non
     return pdf.context(path, page, text, neighbours)
 
 
-@mcp.tool(title="PDF: links on a page", annotations=READ)
+@tool(title="PDF: links on a page", annotations=READ)
 def links(path: str | None = None, page: int | None = None) -> list[dict[str, Any]]:
     """Links on a page with their targets, to follow citations yourself.
 
@@ -102,7 +124,7 @@ def links(path: str | None = None, page: int | None = None) -> list[dict[str, An
     return pdf.links(path, page)
 
 
-@mcp.tool(title="PDF: table of contents", annotations=READ)
+@tool(title="PDF: table of contents", annotations=READ)
 def outline(path: str | None = None) -> list[dict[str, Any]]:
     """The document's table of contents.
 
@@ -112,7 +134,7 @@ def outline(path: str | None = None) -> list[dict[str, Any]]:
     return pdf.outline(path)
 
 
-@mcp.tool(title="PDF: highlights and notes", annotations=READ)
+@tool(title="PDF: highlights and notes", annotations=READ)
 def annotations(path: str | None = None, page: int | None = None) -> list[dict[str, Any]]:
     """All highlights, notes and attachments saved in the PDF.
 
@@ -122,7 +144,7 @@ def annotations(path: str | None = None, page: int | None = None) -> list[dict[s
     return pdf.annotations(path, page)
 
 
-@mcp.tool(title="PDF: highlight or underline text", annotations=WRITE)
+@tool(title="PDF: highlight or underline text", annotations=WRITE)
 def mark_text(text: str, note: str | None = None, style: str = "highlight",
               note_in_margin: bool = False, color: str | None = None,
               path: str | None = None, page: int | None = None) -> dict[str, Any]:
@@ -135,7 +157,7 @@ def mark_text(text: str, note: str | None = None, style: str = "highlight",
     return result
 
 
-@mcp.tool(title="PDF: margin note or reply", annotations=WRITE)
+@tool(title="PDF: margin note or reply", annotations=WRITE)
 def add_note(note: str, near_text: str | None = None, reply_to: int | None = None,
              color: str | None = None, path: str | None = None,
              page: int | None = None) -> dict[str, Any]:
@@ -150,7 +172,7 @@ def add_note(note: str, near_text: str | None = None, reply_to: int | None = Non
     return result
 
 
-@mcp.tool(title="PDF: attach a text file", annotations=WRITE)
+@tool(title="PDF: attach a text file", annotations=WRITE)
 def attach_file(name: str, content: str, note: str | None = None,
                 near_text: str | None = None, replace_xref: int | None = None,
                 color: str | None = None, path: str | None = None,
@@ -166,7 +188,7 @@ def attach_file(name: str, content: str, note: str | None = None,
     return result
 
 
-@mcp.tool(title="PDF: read an attached file", annotations=READ)
+@tool(title="PDF: read an attached file", annotations=READ)
 def read_attachment(xref: int, path: str | None = None) -> dict[str, Any]:
     """Read an attached file back as text.
 
@@ -176,7 +198,7 @@ def read_attachment(xref: int, path: str | None = None) -> dict[str, Any]:
     return pdf.read_attachment(path, xref)
 
 
-@mcp.tool(title="PDF: delete an annotation", annotations=DELETE)
+@tool(title="PDF: delete an annotation", annotations=DELETE)
 def remove_annotation(xref: int, path: str | None = None) -> dict[str, Any]:
     """Delete an annotation by xref.
 
@@ -188,7 +210,7 @@ def remove_annotation(xref: int, path: str | None = None) -> dict[str, Any]:
     return result
 
 
-@mcp.tool(title="Okular: show a page to the user", annotations=WRITE)
+@tool(title="Okular: show a page to the user", annotations=WRITE)
 def goto(page: int, path: str | None = None) -> dict[str, Any]:
     """Jump Okular to a page for the user.
 
