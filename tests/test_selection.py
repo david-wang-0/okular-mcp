@@ -41,13 +41,13 @@ def fake(monkeypatch):
     ("primary", ["wl-paste", "--primary", "--no-newline"]),
     ("clipboard", ["wl-paste", "--no-newline"]),
 ])
-def test_wayland_uses_wl_paste(fake, source, argv):
+def test_c2_wayland_uses_wl_paste(fake, source, argv):
     r = fake(("wl-paste", "xclip", "xsel"), wayland=True, stdout="hi")
     assert selection.read(source) == "hi" and r.calls == [argv]
 
 
 @pytest.mark.parametrize("source", ["primary", "clipboard"])
-def test_x11_uses_xclip(fake, source):
+def test_c2_x11_uses_xclip(fake, source):
     r = fake(("wl-paste", "xclip", "xsel"), wayland=False)
     selection.read(source)
     assert r.calls == [["xclip", "-o", "-selection", source]]
@@ -60,7 +60,7 @@ def test_wayland_without_wl_paste_falls_back_to_xclip(fake):
 
 
 @pytest.mark.parametrize("source, flag", [("primary", "--primary"), ("clipboard", "--clipboard")])
-def test_xsel_when_no_xclip(fake, source, flag):
+def test_c2_xsel_when_no_xclip(fake, source, flag):
     r = fake(("xsel",))
     selection.read(source)
     assert r.calls == [["xsel", "-o", flag]]
@@ -73,7 +73,7 @@ def test_no_tool_raises(fake):
     assert r.calls == []
 
 
-def test_bad_source_raises_before_running_anything(fake):
+def test_c2_bad_source_raises_before_running_anything(fake):
     r = fake(("xclip",))
     with pytest.raises(selection.SelectionError):
         selection.read("secondary")
@@ -92,7 +92,7 @@ def test_stdout_returned_verbatim(fake):
 
 
 @pytest.mark.parametrize("stderr", ["Nothing is copied", "Error: No selection", "xclip: no selection\n"])
-def test_empty_selection_is_empty_string(fake, stderr):
+def test_c2_empty_selection_is_empty_string(fake, stderr):
     fake(("xclip",), rc=1, stderr=stderr, stdout="junk")
     assert selection.read() == ""
 

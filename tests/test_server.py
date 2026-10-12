@@ -1,250 +1,31 @@
 import asyncio
 import re
+import subprocess
+import sys
 from pathlib import Path
 
-import pymupdf
 import pytest
 
-from okular_mcp import pdf, selection, server, viewer
-from okular_mcp.viewer import ViewerError, ViewerWindow
+from okular_mcp import selection, server, viewer
+
+ROOT = Path(__file__).resolve().parent.parent
+PACKAGE = ROOT / "okular_mcp"
 
 
 @pytest.fixture
-def sample(tmp_path):
-    path = tmp_path / "s.pdf"
-    doc = pymupdf.open()
-    for n in (1, 2):
-        pg = doc.new_page()
-        pg.insert_text((72, 72), f"Page {n} first line of text.")
-        pg.insert_text((72, 100), "The quick brown fox jumps over the lazy dog.")
-    doc.save(path); doc.close()
-    return str(path)
+def sel(monkeypatch):
+    """Fake selection.read; records the sources asked for."""
+    class Sel:
+        text, reads = "", []
+
+        def __call__(self, source="primary"):
+            self.reads.append(source)
+            return self.text
+    s = Sel()
+    s.reads = []
+    monkeypatch.setattr(selection, "read", s)
+    return s
 
-
-class Fake:
-    """Stand-in for the viewer and selection backends; records what the tools ask."""
-
-    def __init__(self, monkeypatch, path, page=1, sel="", fail=False):
-        self.path, self.page, self.sel, self.fail = path, page, sel, fail
-        self.reloads, self.reads, self.current_calls = [], [], 0
-        self.reload_error = False
-        monkeypatch.setattr(viewer, "current", self.current)
-        monkeypatch.setattr(viewer, "windows", lambda: [self.current()])
-        monkeypatch.setattr(viewer, "reload", self.reload)
-        monkeypatch.setattr(viewer, "goto", lambda page, path=None: ViewerWindow("svc", 1, path or self.path, page, 2))
-        monkeypatch.setattr(selection, "read", self.read)
-
-    def current(self):
-        self.current_calls += 1
-        if self.fail:
-            raise ViewerError("no Okular window")
-        return ViewerWindow("org.kde.okular-1", 1, self.path, self.page, 2)
-
-    def reload(self, path):
-        self.reloads.append(path)
-        if self.reload_error:
-            raise ViewerError("reload failed")
-
-    def read(self, source="primary"):
-        self.reads.append(source)
-        return self.sel
-
-
-@pytest.fixture
-def fake(monkeypatch, sample):
-    return lambda **kw: Fake(monkeypatch, sample, **kw)
-
-
-# --- _current ---
-
-def test_current_explicit_path_and_page_skip_viewer(fake):
-    f = fake(fail=True)
-    assert server._current("/x.pdf", 4) == ("/x.pdf", 4)
-    assert f.current_calls == 0
-
-
-def test_current_fills_missing_from_viewer(fake, sample):
-    fake(page=2)
-    assert server._current(None, None) == (sample, 2)
-    assert server._current("/x.pdf", None) == ("/x.pdf", 2)
-    assert server._current(None, 5) == (sample, 5)
-
-
-def test_current_without_viewer_raises(fake):
-    fake(fail=True)
-    with pytest.raises(ViewerError):
-        server._current(None, None)
-
-
-# --- read tools ---
-
-def test_viewer_state_dict_keys(fake, sample):
-    fake(page=2)
-    assert server.viewer_state() == [{"service": "org.kde.okular-1", "pid": 1, "path": sample,
-                                      "page": 2, "pages": 2, "viewer": "okular"}]
-
-
-def test_page_text_defaults_to_shown_page(fake):
-    fake(page=2)
-    assert server.page_text().startswith("--- page 2 ")
-    assert server.page_text(page=1).startswith("--- page 1 ")
-
-
-def test_links_defaults_to_shown_page(fake, sample, monkeypatch):
-    fake(page=2)
-    seen = []
-    monkeypatch.setattr(pdf, "links", lambda p, n: seen.append((p, n)) or [])
-    server.links()
-    server.links(page=1)
-    assert seen == [(sample, 2), (sample, 1)]
-
-
-def test_context_reads_primary_selection_when_no_text(fake):
-    f = fake(page=2, sel="lazy dog")
-    c = server.context()
-    assert f.reads == ["primary"] and c["page"] == 2 and c["selection"] == "lazy dog" and c["lines"] == "2-2"
-
-
-def test_context_with_text_does_not_read_selection(fake):
-    f = fake()
-    assert server.context(text="brown fox")["selection"] == "brown fox"
-    assert f.reads == []
-
-
-def test_outline_annotations_read_attachment_default_to_current_path(fake, sample):
-    fake()
-    x = pdf.attach_file(sample, 1, "n.md", "body")["xref"]
-    assert server.outline() == []
-    assert [a["xref"] for a in server.annotations()] == [x]
-    assert server.read_attachment(x)["content"] == "body"
-
-
-def test_goto_returns_window_dict(fake):
-    fake()
-    assert server.goto(2, "/x.pdf") == {"service": "svc", "pid": 1, "path": "/x.pdf", "page": 2,
-                                        "pages": 2, "viewer": "okular"}
-
-
-# --- get_selection ---
-
-def test_get_selection_located_on_shown_page(fake, sample):
-    f = fake(page=2, sel="lazy dog")
-    assert server.get_selection() == {"text": "lazy dog", "source": "primary", "path": sample,
-                                      "page": 2, "lines": "2-2"}
-    assert f.reads == ["primary"]
-
-
-def test_get_selection_not_on_shown_page_has_no_location(fake):
-    fake(sel="words from another window")
-    assert server.get_selection() == {"text": "words from another window", "source": "primary"}
-
-
-def test_get_selection_empty(fake):
-    fake(sel="")
-    assert server.get_selection() == {"text": "", "source": "primary"}
-
-
-def test_get_selection_survives_viewer_error(fake):
-    f = fake(sel="lazy dog", fail=True)
-    assert server.get_selection("clipboard") == {"text": "lazy dog", "source": "clipboard"}
-    assert f.reads == ["clipboard"]
-
-
-def test_get_selection_survives_missing_file(fake, tmp_path):
-    f = fake(sel="lazy dog")
-    f.path = str(tmp_path / "gone.pdf")
-    assert server.get_selection() == {"text": "lazy dog", "source": "primary"}
-
-
-# --- write tools: reload after write, reload errors swallowed ---
-
-WRITES = {
-    "mark_text": lambda: server.mark_text("brown fox"),
-    "add_note": lambda: server.add_note("n"),
-    "attach_file": lambda: server.attach_file("a.md", "x"),
-}
-
-
-@pytest.mark.parametrize("tool", WRITES)
-@pytest.mark.parametrize("reload_error", [False, True])
-def test_write_tools_reload_after_write(fake, sample, tool, reload_error):
-    f = fake(page=2)
-    f.reload_error = reload_error
-    r = WRITES[tool]()
-    assert r["page"] == 2 and f.reloads == [sample]
-    assert [a["xref"] for a in pdf.annotations(sample)] == [r["xref"]]
-
-
-@pytest.mark.parametrize("reload_error", [False, True])
-def test_remove_annotation_reloads_after_write(fake, sample, reload_error):
-    f = fake()
-    f.reload_error = reload_error
-    x = pdf.add_note(sample, 2, "n")["xref"]
-    assert server.remove_annotation(x)["page"] == 2
-    assert f.reloads == [sample] and pdf.annotations(sample) == []
-
-
-def test_mark_text_passes_style_note_and_color(fake, sample):
-    fake()
-    r = server.mark_text("lazy dog", note="hm", style="underline", note_in_margin=True, color="green", page=2)
-    assert r["page"] == 2 and r["style"] == "underline" and "note_xref" in r
-    assert r["color"] == [round(c, 2) for c in pdf.COLORS["green"]]
-
-
-def test_add_note_reply_finds_target_page_not_shown_page(fake, sample):
-    fake(page=1)
-    target = pdf.add_note(sample, 2, "question")["xref"]
-    r = server.add_note("answer", reply_to=target)
-    assert r["page"] == 2 and r["reply_to"] == target
-    assert {a["xref"]: a["page"] for a in pdf.annotations(sample)}[r["xref"]] == 2
-
-
-def test_add_note_near_text_on_shown_page(fake):
-    fake(page=2)
-    assert server.add_note("n", near_text="lazy dog")["page"] == 2
-
-
-def test_add_note_explicit_path_without_page_requires_page(fake, sample):
-    """With an explicit path, add_note does not borrow the shown page (unlike mark_text)."""
-    f = fake(page=2)
-    with pytest.raises(ValueError, match="page is required"):
-        server.add_note("n", path=sample)
-    assert f.current_calls == 0
-
-
-def test_attach_file_replace_finds_target_page_not_shown_page(fake, sample):
-    fake(page=1)
-    x = pdf.attach_file(sample, 2, "a.md", "old")["xref"]
-    r = server.attach_file("b.md", "new", replace_xref=x)
-    assert r["page"] == 2 and r["xref"] == x
-    assert pdf.read_attachment(sample, x)["content"] == "new"
-
-
-# --- registration ---
-
-def _tools():
-    return {t.name: t for t in asyncio.run(server.mcp.list_tools())}
-
-
-def test_registered_tools_match_readme_table():
-    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
-    documented = set(re.findall(r"^\| `(\w+)\(", readme, re.M))
-    assert set(_tools()) == documented == {
-        "viewer_state", "get_selection", "page_text", "context", "links", "outline", "annotations",
-        "mark_text", "add_note", "attach_file", "read_attachment", "remove_annotation", "goto"}
-
-
-def test_tool_annotation_hints():
-    hints = {n: t.annotations.model_dump(by_alias=True) for n, t in _tools().items()}
-    read = {"viewer_state", "get_selection", "page_text", "context", "links", "outline",
-            "annotations", "read_attachment"}
-    assert {n for n, h in hints.items() if h["readOnlyHint"]} == read
-    assert {n for n, h in hints.items() if h["destructiveHint"]} == {"remove_annotation"}
-    for n in ("mark_text", "add_note", "attach_file", "goto"):
-        assert hints[n]["readOnlyHint"] is False and hints[n]["destructiveHint"] is False
-
-
-# --- errors reach the model verbatim, as ToolError (mcp >= 2 hides anything else) ---
 
 def _call(name, args):
     return asyncio.run(server.mcp.call_tool(name, args))
@@ -262,30 +43,159 @@ def _tool_error(name, args):
     return str(e.value)[len(prefix):]
 
 
-def test_viewer_error_reaches_caller_as_tool_error(fake):
-    fake(fail=True)
-    assert _tool_error("page_text", {}) == "no Okular window"
+def _structured(result):
+    return result.structured_content["result"]
 
 
-def test_pdf_value_error_reaches_caller_as_tool_error(fake, sample):
-    fake()
-    assert _tool_error("links", {"path": sample, "page": 9}) == "page 9 outside 1-2"
+# --- C1 ---
+
+def test_c1_viewer_state_returns_entries(two_windows, pdfs):
+    assert server.viewer_state() == viewer.entries()
+    assert [(e["path"], e["active"]) for e in _structured(_call("viewer_state", {}))] == \
+        [(pdfs["a"], True), (pdfs["b"], False)]
 
 
-def test_selection_error_reaches_caller_as_tool_error(fake, monkeypatch):
-    fake()
-    monkeypatch.setattr(selection, "read", lambda source="primary": (_ for _ in ()).throw(
-        selection.SelectionError("source must be 'primary' or 'clipboard'")))
-    assert _tool_error("get_selection", {"source": "x"}) == "source must be 'primary' or 'clipboard'"
+def test_c1_error_reaches_caller_verbatim(no_okular):
+    assert _tool_error("viewer_state", {}).startswith("no Okular window with a PDF open")
 
 
-def test_missing_file_reaches_caller_as_tool_error(fake, tmp_path):
-    fake()
+def test_c1_no_document_error_reaches_caller_verbatim(bus):
+    bus({1: {"path": "", "page": 0, "pages": 0}}, {"org.kde.okular-1": 1})
+    assert _tool_error("viewer_state", {}) == "no Okular window with a PDF open"
+
+
+# --- C2 ---
+
+def test_c2_primary_attributed_to_active_entry(two_windows, pdfs, sel):
+    sel.text = "lazy dog"
+    assert server.get_selection() == {"text": "lazy dog", "source": "primary", "viewer": "okular",
+                                      "path": pdfs["a"], "page": 3}
+    assert sel.reads == ["primary"]
+
+
+def test_c2_primary_without_active_entry_is_unattributed_not_an_error(no_okular, sel):
+    sel.text = "words"
+    assert server.get_selection("primary") == {"text": "words", "source": "primary"}
+
+
+def test_c2_primary_with_only_empty_windows_is_unattributed(bus, sel):
+    bus({1: {"path": "", "page": 0, "pages": 0}}, {"org.kde.okular-1": 1})
+    assert server.get_selection() == {"text": "", "source": "primary"}
+
+
+def test_c2_clipboard_is_never_attributed(two_windows, sel):
+    sel.text = "copied"
+    assert server.get_selection("clipboard") == {"text": "copied", "source": "clipboard"}
+    assert two_windows.calls == []
+
+
+def test_c2_empty_selection_is_empty_text(two_windows, pdfs, sel):
+    assert server.get_selection()["text"] == ""
+
+
+def test_c2_bad_source_raises_before_reading(two_windows, sel):
+    with pytest.raises(ValueError) as e:
+        server.get_selection("secondary")
+    assert str(e.value) == "source must be 'primary' or 'clipboard'"
+    assert sel.reads == [] and two_windows.calls == []
+
+
+def test_c2_bad_source_reaches_caller_verbatim(sel):
+    assert _tool_error("get_selection", {"source": "secondary"}) == "source must be 'primary' or 'clipboard'"
+
+
+def test_c2_selection_tool_error_reaches_caller_verbatim(monkeypatch):
+    def read(source="primary"):
+        raise selection.SelectionError("no clipboard tool found: install wl-clipboard (Wayland) or xclip/xsel (X11)")
+    monkeypatch.setattr(selection, "read", read)
+    assert _tool_error("get_selection", {}).startswith("no clipboard tool found")
+
+
+def test_c2_through_call_tool(two_windows, pdfs, sel):
+    sel.text = "x"
+    assert _call("get_selection", {}).structured_content == {
+        "text": "x", "source": "primary", "viewer": "okular", "path": pdfs["a"], "page": 3}
+
+
+# --- C3 ---
+
+def test_c3_goto_returns_entry(two_windows, pdfs):
+    r = _call("goto", {"page": 2, "path": pdfs["b"]}).structured_content
+    assert r == {"viewer": "okular", "window": "org.kde.okular-200", "path": pdfs["b"], "page": 2,
+                 "pages": 4, "active": False}
+
+
+def test_c3_out_of_range_reaches_caller_verbatim(two_windows, pdfs):
+    assert _tool_error("goto", {"page": 9, "path": pdfs["b"]}) == "page 9 outside 1-4"
+    assert not [m for m in two_windows.methods() if m[1] == "goToPage"]
+
+
+def test_c3_no_such_file_reaches_caller_verbatim(two_windows, tmp_path):
     gone = str(tmp_path / "gone.pdf")
-    assert gone in _tool_error("outline", {"path": gone})
+    assert _tool_error("goto", {"page": 1, "path": gone}) == f"no such file: {gone}"
+    assert two_windows.calls == []
 
 
-def test_direct_calls_keep_original_exception_types(fake, sample):
-    fake()
-    with pytest.raises(ValueError, match="page 9 outside 1-2"):
-        server.links(sample, 9)
+def test_c3_nothing_open_reaches_caller_as_c1(no_okular):
+    assert _tool_error("goto", {"page": 1}).startswith("no Okular window with a PDF open")
+
+
+# --- C4: three tools, no reload, no PDF library ---
+
+def _tools():
+    return {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+
+
+def test_c4_registered_tools_are_exactly_the_contract_and_readme_table():
+    readme = (ROOT / "README.md").read_text()
+    documented = set(re.findall(r"^\| `(\w+)\(", readme, re.M))
+    assert set(_tools()) == documented == {"viewer_state", "get_selection", "goto"}
+
+
+def test_c4_no_reload_anywhere():
+    assert not hasattr(viewer, "reload") and not hasattr(server, "_reload")
+    for src in PACKAGE.glob("*.py"):
+        assert "reload" not in src.read_text().lower(), src.name
+
+
+def test_c4_okular_methods_called_only_read_open_and_goto():
+    called = set()
+    for src in PACKAGE.glob("*.py"):
+        called |= set(re.findall(r'_okular\(\s*[\w.]+,\s*"(\w+)"', src.read_text()))
+    assert called == {"currentDocument", "currentPage", "pages", "openDocument", "goToPage"}
+
+
+def test_c4_nothing_imports_pymupdf():
+    for src in PACKAGE.glob("*.py"):
+        assert not re.search(r"\b(pymupdf|fitz)\b", src.read_text()), src.name
+    assert "pymupdf" not in (ROOT / "pyproject.toml").read_text().lower()
+    out = subprocess.run(
+        [sys.executable, "-c", "import sys, okular_mcp.server, okular_mcp.hook; "
+         "print(sorted(m for m in ('pymupdf', 'fitz') if m in sys.modules))"],
+        capture_output=True, text=True, cwd=ROOT, check=True)
+    assert out.stdout.strip() == "[]"
+
+
+def test_c4_tool_annotation_hints():
+    hints = {n: t.annotations.model_dump(by_alias=True) for n, t in _tools().items()}
+    assert {n for n, h in hints.items() if h["readOnlyHint"]} == {"viewer_state", "get_selection"}
+    assert hints["goto"]["readOnlyHint"] is False and hints["goto"]["destructiveHint"] is False
+
+
+# --- the tool() decorator ---
+
+def test_direct_calls_keep_original_exception_types(two_windows, pdfs):
+    with pytest.raises(ValueError, match="page 9 outside 1-4"):
+        server.goto(9, pdfs["b"])
+    with pytest.raises(FileNotFoundError):
+        server.goto(1, pdfs["b"] + ".gone")
+
+
+def test_unexpected_exception_stays_generic(monkeypatch):
+    """Only anticipated errors pass their text on; a crash does not."""
+    def boom():
+        raise ZeroDivisionError("secret")
+    monkeypatch.setattr(viewer, "entries", boom)
+    with pytest.raises(server.ToolError) as e:
+        _call("viewer_state", {})
+    assert "secret" not in str(e.value)

@@ -1,48 +1,103 @@
 # okular-mcp
 
-An [MCP](https://modelcontextprotocol.io) server that lets an LLM session read
-and annotate a PDF **alongside you in [Okular](https://okular.kde.org/)**: it
-sees which document and page you are on, the text under your mouse, and the
-highlights and notes you have made, and it can highlight passages back and
-drive the viewer to a page.
+An [MCP](https://modelcontextprotocol.io) server that tells an LLM session **what
+you are reading in [Okular](https://okular.kde.org/)**: which documents are open
+and on what page, the text you have selected with the mouse, and (when you ask)
+showing you a page. A prompt hook for Claude Code adds the document and page to
+every prompt you type in a project that contains the PDF.
 
-The PDF file is the shared state. Okular saves its annotations as standard PDF
-annots; this server reads and writes those same annots with
-[PyMuPDF](https://pymupdf.readthedocs.io/), so nothing lives in a private
-database and the notes travel with the file.
+This server does not read or write PDF content. It implements the viewer-state
+contract in [`CONTRACT.md`](CONTRACT.md), and the PDF work is done by sibling
+servers:
+
+- **`pdf-reader-writer-mcp`**: page text with line numbers, links, outline,
+  annotations, marks and notes written back, and `locate` (selection to line
+  numbers). Every tool takes the `path` and `page` this server reports.
+- **`vscode-pdf-mcp`**: the same contract for the PDF viewer inside VS Code.
+
+`CONTRACT.md` is shared: both viewer servers keep an identical copy, and its
+clauses (C1 to C8) are pinned by tests named after them (`test_c3_...`). Change it
+in both repositories together, never in one.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `viewer_state()` | Every open Okular window: document path, current page (1-based), page count |
-| `get_selection(source="primary")` | Text currently selected with the mouse (`primary`), or the clipboard (`clipboard`), plus the document, page and line numbers when it is found on the page shown |
-| `page_text(path?, page?, to?, lines?)` | Numbered text lines of a page range, defaulting to the page shown in Okular; `lines="12-30"` narrows to a window |
-| `context(neighbours?, text?, path?, page?)` | The paragraph around the current mouse selection (or `text`) on the page shown, with neighbouring paragraphs and line numbers |
-| `links(path?, page?)` | Links on a page: anchor text and line, then the target page and line for internal links (citations, sections, figures) or the URL, so the model can follow a citation with `page_text` on its own |
-| `outline(path?)` | The bookmark tree (sections with page numbers), a map of the paper |
-| `annotations(path?, page?)` | All saved annotations: page, type, author, highlighted text, note |
-| `mark_text(text, note?, style?, note_in_margin?, color?, path?, page?)` | Mark every occurrence of `text` on the page (quote enough to be unique) as `highlight` (default), `underline`, `squiggly` or `strikeout`, saved incrementally into the PDF. The note sits on the mark, or with `note_in_margin` on a comment icon in the margin that replies to the mark |
-| `add_note(note, near_text?, reply_to?, color?, path?, page?)` | Comment icon in the margin: level with `near_text`, as a threaded reply to annotation `reply_to`, or at the top of the page |
-| `attach_file(name, content, note?, near_text?, replace_xref?, color?, path?, page?)` | Embed a text file (`notes.md`, `diagram.mmd`, ...) as a paperclip annotation in the margin, or replace the file of an existing attachment. Okular saves it from the icon's context menu |
-| `read_attachment(xref, path?)` | Contents of a file-attachment annotation, decoded as text |
-| `remove_annotation(xref, path?)` | Delete an annotation by the `xref` that `annotations` reports, saved incrementally |
-| `goto(page, path?)` | Jump Okular to a page, opening the document first if needed. Meant for "show me where that is defined", not for the model to navigate on its own |
+| `viewer_state()` | One entry per Okular window with a document open, the active one first (C1) |
+| `get_selection(source="primary")` | The text selected with the mouse (`primary`), attributed to the active document, or the clipboard (`clipboard`), never attributed (C2) |
+| `goto(page, path?)` | Show `page` of `path` (default: the active document), opening the file first if no window has it; returns its entry after the move. Meant for "show me where that is", not for the model to navigate on its own (C3) |
 
-Marks written by the server carry a distinct author (`llm`, override with
-`OKULAR_MCP_AUTHOR`) and a light-blue colour (blue for underlines and notes, red for strikeout), so they
-are told apart from yours. Every writing tool takes `color`: a palette name (`blue`,
-`yellow`, `green`, `orange`, `pink`, `purple`, `red`, `cyan`, `grey`), `#rrggbb`, or
-`r,g,b` in 0–1, so a session can keep colours consistent by usage (one for
-definitions, another for open questions).
+An **entry** is
+
+```json
+{"viewer": "okular", "window": "org.kde.okular-12345", "path": "/abs/paper.pdf",
+ "page": 3, "pages": 12, "active": true}
+```
+
+`window` is the Okular process's D-Bus service name, `page` is 1-based, `pages`
+the page count. Okular reports no focus, so the **active** entry is the first
+window that has a document open. With nothing open (or Okular not running),
+`viewer_state` and `goto` without a path fail with a message starting
+`no Okular window with a PDF open`.
+
+`get_selection` returns `{"text", "source"}`, plus `viewer`, `path` and `page` of
+the active entry for `source="primary"` when a document is open. `text` is `""`
+when nothing is selected. The primary selection is system-wide: it is whatever
+was last selected in any window, so it is attributed to Okular's active
+document on trust.
+
+`goto` fails with `no such file: <path>` for a path that does not exist and with
+`page N outside 1-M` before moving if the page is out of range.
+
+Errors reach the model as their message (as an MCP tool error), not as a
+generic "Error executing tool".
+
+## Prompt hook (Claude Code)
+
+`okular-mcp-hook` is a `UserPromptSubmit` hook. Add it to a Claude Code
+`settings.json` (user or project):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "okular-mcp-hook", "timeout": 5}]}
+    ]
+  }
+}
+```
+
+When the active Okular document lies inside the session's working directory
+(after resolving symlinks; a PDF in a sibling directory does not count), it adds
+
+```
+The user is reading /abs/project/paper.pdf in Okular, page 3 of 12.
+```
+
+to the prompt's context. Otherwise it adds nothing. It never adds the selection:
+the system primary selection cannot be tied to Okular, and is often the text just
+selected in the terminal the prompt is typed in; the model can still call
+`get_selection`. The hook always exits 0, also on bad input or when Okular or the
+bus does not answer (each qdbus call may take 0.3 s, and a 0.8 s watchdog ends it
+silently), so it never blocks a prompt.
+
+## No reload tool, and saving
+
+Nothing here writes the PDF, and there is no reload tool (C4). Okular's
+"Reload document on file change" (WatchFile, on by default) re-renders the
+document by itself after another tool saves it: an incremental save by
+`pdf-reader-writer-mcp` showed up in about 1.5 s. But Okular keeps your own
+**unsaved** annotations in memory and loses them when the file changes, so save
+in Okular (Ctrl+S) before another tool writes to the file; the server's
+instructions tell the model to ask you first.
 
 ## Requirements
 
 Linux with KDE's Okular on the session D-Bus, plus:
 
 - `qdbus` (Qt tools; installed with Okular on most distributions)
-- `wl-clipboard` on Wayland, or `xclip`/`xsel` on X11, for the selection tools
-- Python 3.10+; `mcp` and `pymupdf` are pulled in as dependencies
+- `wl-clipboard` on Wayland, or `xclip`/`xsel` on X11, for `get_selection`
+- Python 3.10+; `mcp` is the only dependency
 
 ## Install
 
@@ -52,7 +107,8 @@ With [uv](https://docs.astral.sh/uv/):
 uv tool install git+https://github.com/david-wang-0/okular-mcp
 ```
 
-Then register it with your MCP client. Claude Code, user scope:
+This installs both `okular-mcp` (the server) and `okular-mcp-hook`. Register the
+server with your MCP client. Claude Code, user scope:
 
 ```sh
 claude mcp add okular -s user -- okular-mcp
@@ -66,29 +122,8 @@ codex mcp add okular -- okular-mcp
 
 Any other client: run `okular-mcp` as a stdio server.
 
-## Workflow
-
-1. Read in Okular. Highlight with the highlighter tool, add notes to highlights.
-2. **Save** (Ctrl+S). Okular keeps annotations in memory until then, and the
-   server only sees what is in the file.
-3. Ask the LLM to collect the highlights (`annotations`), discuss the page you
-   are on (`viewer_state`, `page_text`), or explain the phrase under your mouse
-   in its paragraph (`get_selection`, `context`). It can follow citations and
-   section references itself (`links`, then `page_text` at the target line) and
-   get a map of the paper (`outline`).
-4. Let it mark back (`mark_text`; `style="underline"` with `note_in_margin` is the
-   least intrusive), answer a note of yours as a threaded reply (`add_note` with
-   `reply_to`), attach a Markdown or Mermaid file next to a passage
-   (`attach_file`, read back with `read_attachment`), or clean up its own marks
-   (`remove_annotation`). The server saves incrementally and asks Okular to
-   reload, so the change appears in the viewer.
-
 ## Gotchas
 
-- **Save before any writing tool** (`mark_text`, `add_note`, `attach_file`,
-  `remove_annotation`). If Okular has unsaved annotations when the
-  file changes on disk, it offers a reload and the unsaved marks are lost if
-  you accept. The tool descriptions tell the model to ask you to save first.
 - **Tabs.** With several documents in tabs of one window, Okular's D-Bus
   interface reports the first-opened tab, not the active one
   ([KDE bug 502482](https://bugs.kde.org/show_bug.cgi?id=502482)). Use
@@ -99,15 +134,11 @@ Any other client: run `okular-mcp` as a stdio server.
 - **Selection text is Okular's text layer**, returned verbatim: hyphenation
   and column order can be messy.
 - **Minimal client environments.** Some MCP clients (Codex, the Python SDK's
-  client) start servers with only `HOME`, `PATH`, `SHELL` and `USER`. The server
-  then recovers `DBUS_SESSION_BUS_ADDRESS` and `WAYLAND_DISPLAY` from
-  `XDG_RUNTIME_DIR` (or `/run/user/<uid>`), so no per-client `env` block is
-  needed on a systemd desktop.
-- **Lines are reconstructed.** A PDF has no lines; `page_text` and `context` use
-  PyMuPDF's block and line grouping, so a two-column page reads column by column
-  and equations or footnotes can land in odd places.
-- Highlighted text is recovered from the annotation's quads, so it can pick
-  up a neighbouring word on tight line spacing.
+  client) start servers with only `HOME`, `PATH`, `SHELL` and `USER`. Before any
+  `qdbus`, `wl-paste`, `xclip` or `xsel` call, the server (and the hook) recover
+  `DBUS_SESSION_BUS_ADDRESS` and `WAYLAND_DISPLAY` from `XDG_RUNTIME_DIR` (or
+  `/run/user/<uid>`), so no per-client `env` block is needed on a systemd
+  desktop (C5).
 
 ## Development
 
@@ -116,9 +147,11 @@ uv venv && uv pip install -e '.[test]'
 .venv/bin/pytest
 ```
 
-`okular_mcp/viewer.py` is the only Okular-specific module (`windows`,
-`current`, `goto`, `reload`); `selection.py` and `pdf.py` are viewer-agnostic,
-so another viewer backend can be added without changing the tool surface.
+The tests run against fakes (a fake session bus behind `viewer._call`, a fake
+`subprocess.run` and `PATH`); they never start Okular or touch the real bus.
+`okular_mcp/viewer.py` is the only Okular-specific module (`windows`, `entries`,
+`active`, `goto`), `selection.py` reads the system selection, `hook.py` is the
+prompt hook.
 
 ## License
 
