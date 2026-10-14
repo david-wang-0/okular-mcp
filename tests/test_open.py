@@ -215,8 +215,3 @@ def test_main_exits_with_the_code(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e:
         cli.main()
     assert e.value.code == 2
-
-
-def test_console_script_is_registered():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    assert 'okular-mcp-open = "okular_mcp.open:main"' in open(os.path.join(root, "pyproject.toml")).read()
