@@ -229,14 +229,48 @@ Any other client: run `okular-mcp` as a stdio server.
 
 ```sh
 uv venv && uv pip install -e '.[test]'
-.venv/bin/pytest
+.venv/bin/pytest                    # the default suite: fakes only, about 15 s
+.venv/bin/pytest -m integration     # real Okular, headless on a private bus, about 30 s
 ```
 
-The tests run against fakes (a fake session bus behind `viewer._call`, a fake
-`subprocess.run` and `PATH`, fake `pdftotext`/`synctex` output); they never start
-Okular or touch the real bus. With `pdflatex`, `synctex` and `pdftotext`
-installed, `tests/test_sourcelines.py` also compiles a small LaTeX document and
-checks the selections' pages and source lines with the real tools.
+The default suite never starts Okular or touches the real bus or selection. Unit
+tests run against fakes (a fake session bus behind `viewer._call`, a fake
+`subprocess.run` and `PATH`, fake `pdftotext`/`synctex` output); the tests of a
+CONTRACT.md clause are named after it (`test_c3_...`). The process-level tests run the real entry points with the fake
+`qdbus`, `wl-paste`, `pdftotext` and `synctex` executables of `tests/fakes.py` on
+`PATH`: `tests/test_mcp.py` drives `okular-mcp` over stdio with the `mcp`
+package's client (tool list, instructions, results, error messages),
+`tests/test_hook_process.py` runs `okular-mcp-hook` as Claude Code does (C6-C8,
+timing included), and `tests/test_packaging.py` checks the console scripts. With
+`pdflatex`, `synctex` and `pdftotext` installed, `tests/test_sourcelines.py` also
+compiles small LaTeX documents and checks the selections' pages and source lines
+with the real tools.
+
+The integration suite (`tests/integration/`, marker `integration`, deselected by
+default) needs `okular`, `dbus-run-session`, `qdbus` (or `qdbus6`), `pdflatex`,
+`synctex` and `pdftotext`, and skips with the list of what is missing; its C4 test
+also needs `pdf-reader-writer-mcp` on `PATH`. It is headless and never touches your
+Okular or screen: `dbus-run-session` provides a private bus, and every Okular and
+every process under test runs on it with `QT_QPA_PLATFORM=offscreen`, without
+`DISPLAY`/`WAYLAND_DISPLAY`, with temporary XDG config, data, cache, state and
+runtime directories, and (for the code under test) a fake `wl-paste` as the
+selection. Okular's output goes to files in pytest's temporary directory, and
+everything on the private bus (Okulars, and daemons it started such as `ksecretd`)
+is killed at the end. It covers C1 (not running, no document, several windows), C3
+`goto` (moving, out of range, no such file, a broken PDF, a closed file, a symlink,
+a path with spaces and `#`), `okular-mcp-open` (new window, reuse, forward search
+into an `\input` file, no SyncTeX data, exit codes), the hook with a selection on
+and off the page, and C4: a mark written by `pdf-reader-writer-mcp`, after which
+Okular reloads the file and stays on the document and page.
+
+Coverage, including the processes the tests start (`[tool.coverage.run]` in
+`pyproject.toml`):
+
+```sh
+uv pip install coverage
+.venv/bin/coverage run -m pytest && .venv/bin/coverage combine && .venv/bin/coverage report -m
+```
+
 `okular_mcp/viewer.py` is the only Okular-specific module (`windows`, `entries`,
 `active`, `goto`, and `new_window`, `open_url`, `wait_loaded` for
 `okular-mcp-open`), `selection.py` reads the system selection, `sourcelines.py`
