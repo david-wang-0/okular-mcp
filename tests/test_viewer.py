@@ -448,3 +448,62 @@ def test_open_url_is_open_document(two_windows):
     viewer.open_url("org.kde.okular-200", "file:///x.pdf#src:3%20/t.tex")
     assert two_windows.methods() == [("org.kde.okular-200", "openDocument", "file:///x.pdf#src:3%20/t.tex")]
     assert two_windows.fragments == ["src:3 /t.tex"]
+
+
+# --- the rarer turns: windows closing, Okular slow to answer or to settle ---
+
+def test_c3_window_closed_while_moving_is_an_error(two_windows, pdfs, monkeypatch):
+    original = two_windows.__class__.__call__
+
+    def closing(self, *args):
+        out = original(self, *args)
+        if args and args[2:3] == ("org.kde.okular.goToPage",):
+            del self.names["org.kde.okular-100"], self.names["org.kde.okular.instance-100"]
+        return out
+    monkeypatch.setattr(two_windows.__class__, "__call__", closing)
+    with pytest.raises(ViewerError) as e:
+        viewer.goto(2)
+    assert str(e.value) == "Okular window org.kde.okular-100 closed while moving to page 2"
+
+
+def test_new_window_keeps_polling_while_the_bus_fails(two_windows, launch, monkeypatch):
+    """A bus call failing while Okular starts is not fatal: the next look may find it."""
+    fake = launch(two_windows, after=2)
+    real, failures = viewer._services, []
+
+    def flaky():
+        if len(failures) < 2:
+            failures.append(1)
+            raise ViewerError("qdbus timed out: ")
+        return real()
+    monkeypatch.setattr(viewer, "_services", flaky)
+    assert viewer.new_window(5) == "org.kde.okular-4242"
+    assert len(failures) == 2 and fake.polls >= 3
+
+
+def test_wait_loaded_keeps_polling_while_the_window_does_not_answer(two_windows, pdfs, monkeypatch):
+    monkeypatch.setattr(viewer, "POLL", 0)
+    real, failures = viewer.window, []
+
+    def flaky(service):
+        if len(failures) < 2:
+            failures.append(1)
+            raise ViewerError("qdbus timed out: ")
+        return real(service)
+    monkeypatch.setattr(viewer, "window", flaky)
+    assert viewer.wait_loaded("org.kde.okular-100", pdfs["a"], page=3, timeout=5).page == 3
+    assert len(failures) == 2
+
+
+def test_wait_loaded_takes_the_window_as_it_is_at_the_timeout(two_windows, pdfs, monkeypatch):
+    """The page never settles (a forward search still scrolling): the last look counts."""
+    monkeypatch.setattr(viewer, "POLL", 0.01)
+    real, pages = viewer.window, iter(range(1, 10_000))
+
+    def scrolling(service):
+        w = real(service)
+        w.page = next(pages)
+        return w
+    monkeypatch.setattr(viewer, "window", scrolling)
+    w = viewer.wait_loaded("org.kde.okular-100", pdfs["a"], page=99, timeout=0.1)
+    assert w.path == pdfs["a"] and w.page > 1

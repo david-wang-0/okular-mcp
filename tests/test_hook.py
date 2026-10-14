@@ -348,3 +348,20 @@ def test_c8_symlinked_cwd_compares_real_paths(monkeypatch, capsys, two_windows, 
 ])
 def test_c8_inside(path, directory, expected):
     assert hook.inside(path, directory) is expected
+
+
+def test_c6_off_the_main_thread_there_is_no_watchdog_and_no_error(two_windows, pdfs):
+    """SIGALRM is only for the main thread: elsewhere the watchdog is a no-op."""
+    import threading
+    out = []
+
+    def work():
+        w = hook._Watchdog(0.01)
+        out.append(w.armed)
+        time.sleep(0.05)
+        w.cancel()
+        out.append(hook.context({"cwd": os.path.dirname(pdfs["a"])}))
+    t = threading.Thread(target=work)
+    t.start()
+    t.join(5)
+    assert out == [False, f"The user is reading {pdfs['a']} in Okular, page 3 of 10."]

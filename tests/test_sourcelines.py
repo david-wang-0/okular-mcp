@@ -368,3 +368,46 @@ def test_real_forward_page(compiled):
     assert sl.forward_page(chapter, 7, pdf) == 2
     assert sl.forward_page(main, 12, pdf) == 3
     assert sl.forward_page(os.path.join(os.path.dirname(pdf), "nothere.tex"), 1, pdf) is None
+
+
+# --- deadlines and the rarer inputs ---
+
+def test_deadline_in_the_past_raises_and_kills_what_it_started(tmp_path, monkeypatch):
+    """A tool still running at the deadline is killed, and locate gives None."""
+    from fakes import FakeBin
+    fake = FakeBin(tmp_path / "fake", tools=("pdftotext",))
+    fake.set(slow={"pdftotext": 30})
+    monkeypatch.setenv("PATH", fake.path)
+    with pytest.raises(subprocess.TimeoutExpired):
+        sl._Deadline(0).left()
+    started = []
+    real = subprocess.Popen
+
+    def popen(*a, **kw):
+        started.append(real(*a, **kw))
+        return started[-1]
+    monkeypatch.setattr(sl.subprocess, "Popen", popen)
+    t = time.monotonic()
+    assert sl.locate("words", "/x.pdf", 1, timeout=0.2) is None
+    assert time.monotonic() - t < 5
+    assert started and all(p.poll() is not None for p in started)
+
+
+@pytest.mark.parametrize("text", ["", "  \n\t"])
+def test_find_without_words_finds_nothing(text):
+    assert sl.find(text, [sl.Word("a", 0, 0, 1, 1, 0)]) == (0, [])
+
+
+def test_whole_keeps_a_hyphenated_word_without_a_second_half():
+    """At the end of the page, or followed on its own printed line, "word-" is its own point."""
+    end = sl.Word("estab-", 0, 0, 1, 1, 0)
+    same_line = [sl.Word("pre-", 0, 0, 1, 1, 0), sl.Word("x", 2, 0, 3, 1, 0)]
+    assert sl._whole(end, [end]) is end
+    assert sl._whole(same_line[0], same_line) is same_line[0]
+    assert sl._whole(end, []) is end
+
+
+def test_forward_page_failure_is_none(tools, pdf):
+    t = tools(views={(3, "/x/a.tex"): [(2, 1.0, 1.0)]})
+    t.fail["synctex"] = FileNotFoundError("synctex")
+    assert sl.forward_page("/x/a.tex", 3, pdf) is None
