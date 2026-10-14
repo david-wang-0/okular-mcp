@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import time
 
 import pytest
 
@@ -205,6 +206,49 @@ def test_c3_relative_path_and_symlink_match_the_shown_document(two_windows, pdfs
     viewer.goto(3, "b.pdf")
     assert two_windows.methods() == [("org.kde.okular-200", "goToPage", "2"),
                                      ("org.kde.okular-200", "goToPage", "3")]
+
+
+# --- a bus or window that does not answer: an error, not a hang (real qdbus processes) ---
+
+@pytest.fixture
+def slow_bus(tmp_path, monkeypatch):
+    """The fake qdbus executable of tests/fakes.py first on PATH, a short TIMEOUT."""
+    from fakes import FakeBin
+    fake = FakeBin(tmp_path / "fake", tools=("qdbus",))
+    monkeypatch.setenv("PATH", fake.path)
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+    monkeypatch.setattr(viewer, "TIMEOUT", 0.5)
+    return fake
+
+
+def test_c3_a_window_that_does_not_answer_is_an_error_not_a_hang(slow_bus, pdfs):
+    slow_bus.windows((100, pdfs["a"], 3, 10))
+    slow_bus.set(slow={"goToPage": 30})
+    t = time.monotonic()
+    with pytest.raises(viewer.Timeout) as e:
+        viewer.goto(2)
+    assert str(e.value) == "qdbus timed out: org.kde.okular-100 /okular org.kde.okular.goToPage 2"
+    assert time.monotonic() - t < 5
+
+
+def test_c1_a_bus_that_does_not_answer_is_the_c1_error_with_the_cause(slow_bus):
+    slow_bus.set(slow={"ListNames": 30})
+    with pytest.raises(ViewerError) as e:
+        viewer.entries()
+    assert str(e.value) == "no Okular window with a PDF open (qdbus timed out: )"
+
+
+def test_c1_a_window_that_does_not_answer_is_left_out(slow_bus, pdfs, monkeypatch):
+    """One hung Okular does not hide the others."""
+    slow_bus.windows((100, pdfs["a"], 3, 10), (200, pdfs["b"], 1, 4))
+    real = viewer._okular
+
+    def hung_100(service, method, *args):
+        if slow_bus.state["names"][service] == 100:  # either of its two bus names
+            raise viewer.Timeout("qdbus timed out")
+        return real(service, method, *args)
+    monkeypatch.setattr(viewer, "_okular", hung_100)
+    assert [e["window"] for e in viewer.entries()] == ["org.kde.okular-200"]
 
 
 # --- _call and _qdbus, against a fake subprocess.run / PATH ---

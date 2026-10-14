@@ -68,8 +68,25 @@ def test_c2_xsel_when_no_xclip(fake, source, flag):
 
 def test_no_tool_raises(fake):
     r = fake(())
-    with pytest.raises(selection.SelectionError, match="wl-clipboard"):
+    with pytest.raises(selection.SelectionError) as e:
         selection.read()
+    assert str(e.value) == "no clipboard tool found: install wl-clipboard (Wayland) or xclip/xsel (X11)"
+    assert r.calls == []
+
+
+def test_c2_clipboard_tool_failure_names_the_command(fake):
+    fake(("xclip",), rc=1, stderr="Can't open display\n")
+    with pytest.raises(selection.SelectionError) as e:
+        selection.read("clipboard")
+    assert str(e.value) == "xclip -o -selection clipboard failed: Can't open display"
+
+
+@pytest.mark.parametrize("source", ["secondary", "", "PRIMARY", "Clipboard"])
+def test_c2_any_other_source_raises_before_running_anything(fake, source):
+    r = fake(("wl-paste", "xclip", "xsel"), wayland=True)
+    with pytest.raises(selection.SelectionError) as e:
+        selection.read(source)
+    assert str(e.value) == "source must be 'primary' or 'clipboard'"
     assert r.calls == []
 
 

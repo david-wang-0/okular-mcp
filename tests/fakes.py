@@ -19,7 +19,8 @@ The state (all optional):
   -bbox-layout`` reports (words on the ``box`` grid).
 - ``edit``: ``[page, line i, word j, input, line]`` records for ``synctex edit``;
   ``views``: ``[line, file, page, x, y]`` records for ``synctex view``.
-- ``slow``: tool -> seconds to sleep first; ``fail``: tool -> stderr text, exit 1;
+- ``slow``: tool -> seconds to sleep first (for qdbus also an Okular method name, e.g.
+  ``goToPage``, or ``ListNames``); ``fail``: tool -> stderr text, exit 1;
   ``garbage``: tool -> stdout text printed instead of an answer.
 
 No pytest import: the scripts import this module with the interpreter's ``-S``.
@@ -191,7 +192,9 @@ def main(name: str, state_file: str, log_file: str, argv: list[str]) -> None:
         state = json.load(f)
     with open(log_file, "a") as f:
         f.write(json.dumps({"tool": name, "argv": argv, "env": {k: os.environ.get(k) for k in SESSION}}) + "\n")
-    time.sleep(state.get("slow", {}).get(name, 0))
+    slow = state.get("slow", {})
+    method = (argv[2].rsplit(".", 1)[1] if len(argv) > 2 else "ListNames") if name == "qdbus" else None
+    time.sleep(slow.get(name, 0) + slow.get(method, 0))
     if name in state.get("fail", {}):
         sys.stderr.write(state["fail"][name] + "\n")
         sys.exit(1)

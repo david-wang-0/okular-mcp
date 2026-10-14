@@ -173,6 +173,33 @@ def test_c7_source_lines(monkeypatch, capsys, two_windows, pdfs, sel, tools, syn
         "fox jumps over the lazy dog and runs\nSource: sec/intro.tex:12-14\nSource: /elsewhere/macros.tex:7")
 
 
+def test_c7_source_absolute_when_outside_cwd_even_if_the_pdf_is_inside(monkeypatch, capsys, two_windows, pdfs, sel,
+                                                                      tools, synctex, tmp_path):
+    """cwd is the PDF's directory; the source lies in its parent."""
+    parent_tex = str(tmp_path / "main.tex")
+    tools(PAGE3, edit={(3, 1, 2): (parent_tex, 2)})
+    sel.text = "lazy"
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])).endswith(
+        f"Selected text (page 3):\nlazy\nSource: {parent_tex}:2")
+
+
+def test_c7_source_lines_follow_the_cut_selection(monkeypatch, capsys, two_windows, pdfs, sel, synctex):
+    monkeypatch.setattr(sourcelines, "locate", lambda *a, **k: sourcelines.Match(3, 1, [[]]))
+    monkeypatch.setattr(sourcelines, "tex_lines", lambda *a, **k: [{"file": pdfs["a"][:-4] + ".tex", "lines": [1, 40]}])
+    sel.text = "x" * 2001
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])).endswith(
+        "\nSelected text (page 3):\n" + "x" * 2000 + " […]\nSource: a.tex:1-40")
+
+
+@pytest.mark.parametrize("text", ["", " \n\t"])
+def test_c7_an_empty_selection_adds_nothing_and_runs_no_tools(monkeypatch, capsys, two_windows, pdfs, sel, tools, text):
+    t = tools(PAGE3)
+    sel.text = text
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.")
+    assert t.calls == []
+
+
 def test_c7_no_source_lines_without_synctex_data(monkeypatch, capsys, two_windows, pdfs, sel, tools):
     tools(PAGE3, edit={(3, 1, 2): ("/x/a.tex", 4)})
     sel.text = "lazy"
@@ -273,6 +300,8 @@ def test_c8_pdf_inside_cwd(monkeypatch, capsys, two_windows, pdfs, tmp_path):
 
 def test_c8_cwd_equal_to_the_pdfs_directory(monkeypatch, capsys, two_windows, pdfs):
     _, out = run(monkeypatch, capsys, event(os.path.dirname(pdfs["a"])))
+    assert pdfs["a"] in out
+    _, out = run(monkeypatch, capsys, event(os.path.dirname(pdfs["a"]) + "/"))
     assert pdfs["a"] in out
 
 
