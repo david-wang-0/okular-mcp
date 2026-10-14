@@ -17,7 +17,10 @@ class Bus:
     """``procs`` maps pid -> {"path", "page", "pages"}; ``names`` maps D-Bus name -> pid
     (None makes the pid lookup fail). ``broken`` pids fail their property calls.
     ``docs`` maps a path to its page count, for openDocument (default 9 pages; None
-    makes the load fail: Okular is then left with no document). openDocument takes a
+    makes the load fail: Okular is then left with no document; "dialog" makes it fail
+    the way a broken PDF does: Okular shows the path with no pages and does not answer,
+    as its modal error dialog is open; "slow" loads 9 pages but does not answer in
+    time either). openDocument takes a
     file:// URL; ``forward`` maps its fragment (``src:<line> <tex>``) to the page Okular
     then shows (default 1), and ``fragments`` records the fragments it got.
     """
@@ -54,6 +57,9 @@ class Bus:
             self.fragments.append(fragment)
             n = self.docs.get(path, 9)
             page = self.forward.get(fragment, 1)
+            if n in ("dialog", "slow"):
+                p.update(path=path, page=0 if n == "dialog" else page, pages=0 if n == "dialog" else 9)
+                raise viewer.Timeout(f"qdbus timed out: {' '.join(args)}")
             p.update(path=path, page=page, pages=n) if n else p.update(path="", page=0, pages=0)
         elif name == "goToPage":
             p["page"] = int(rest[0])

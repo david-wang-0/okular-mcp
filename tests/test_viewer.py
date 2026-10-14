@@ -155,6 +155,21 @@ def test_c3_load_failure_leaving_the_old_document_is_cannot_open(two_windows, pd
         viewer.goto(1, pdfs["c"])
 
 
+def test_c3_broken_pdf_behind_an_error_dialog_is_cannot_open(two_windows, pdfs):
+    """Okular answers openDocument for a file it cannot load only once its modal error
+    dialog is closed: the qdbus timeout is reported as C3's message, before the page check."""
+    two_windows.docs[pdfs["c"]] = "dialog"
+    with pytest.raises(ViewerError) as e:
+        viewer.goto(99, pdfs["c"])
+    assert str(e.value) == f"cannot open {pdfs['c']}"
+    assert not [m for m in two_windows.methods() if m[1] == "goToPage"]
+
+
+def test_c3_slow_load_that_finishes_is_not_an_error(two_windows, pdfs):
+    two_windows.docs[pdfs["c"]] = "slow"
+    assert viewer.goto(4, pdfs["c"]) == entry("org.kde.okular-100", pdfs["c"], 4, 9, True)
+
+
 def test_c3_no_such_file_before_any_okular_call(two_windows, tmp_path):
     gone = str(tmp_path / "gone.pdf")
     with pytest.raises(FileNotFoundError) as e:
@@ -373,6 +388,16 @@ def test_wait_loaded_cannot_open(two_windows, pdfs, monkeypatch):
     monkeypatch.setattr(viewer, "POLL", 0.01)
     with pytest.raises(ViewerError, match=rf"^cannot open {re.escape(pdfs['c'])}$"):
         viewer.wait_loaded("org.kde.okular-100", pdfs["c"], timeout=0.05)
+
+
+def test_open_url_reports_whether_okular_answered(two_windows, pdfs):
+    assert viewer.open_url("org.kde.okular-100", viewer.file_url(pdfs["c"])) is True
+    two_windows.docs[pdfs["a"]] = "dialog"
+    assert viewer.open_url("org.kde.okular-100", viewer.file_url(pdfs["a"])) is False
+
+
+def test_call_timeout_is_a_viewer_error():
+    assert issubclass(viewer.Timeout, ViewerError)
 
 
 def test_open_url_is_open_document(two_windows):

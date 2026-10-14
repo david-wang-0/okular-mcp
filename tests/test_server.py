@@ -195,6 +195,11 @@ def test_c3_cannot_open_reaches_caller_verbatim(two_windows, pdfs):
     assert _tool_error("goto", {"page": 1, "path": pdfs["c"]}) == f"cannot open {pdfs['c']}"
 
 
+def test_c3_broken_pdf_behind_an_error_dialog_reaches_caller_as_cannot_open(two_windows, pdfs):
+    two_windows.docs[pdfs["c"]] = "dialog"
+    assert _tool_error("goto", {"page": 1, "path": pdfs["c"]}) == f"cannot open {pdfs['c']}"
+
+
 def test_c3_nothing_open_reaches_caller_as_c1(no_okular):
     assert _tool_error("goto", {"page": 1}).startswith("no Okular window with a PDF open")
 

@@ -36,6 +36,10 @@ class ViewerError(RuntimeError):
     """No viewer is running, nothing is open, or a D-Bus call fails."""
 
 
+class Timeout(ViewerError):
+    """A qdbus call did not return within ``TIMEOUT``."""
+
+
 @dataclass
 class Window:
     """One Okular process; ``path`` is ``""`` when it has no document open."""
@@ -64,7 +68,7 @@ def _call(*args: str) -> str:
     try:
         out = subprocess.run([_qdbus(), *args], capture_output=True, text=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired as e:
-        raise ViewerError(f"qdbus timed out: {' '.join(args)}") from e
+        raise Timeout(f"qdbus timed out: {' '.join(args)}") from e
     if out.returncode != 0:
         raise ViewerError(f"qdbus {' '.join(args)} failed: {out.stderr.strip() or out.stdout.strip()}")
     # qdbus prints each service with a leading space; strip everything.
@@ -163,7 +167,7 @@ def goto(page: int, path: str | None = None) -> dict[str, Any]:
         if w is None:
             w = ws[0]
             open_url(w.service, file_url(path))
-            # openDocument returns nothing: a load failure shows as another (or no) document.
+            # A load failure shows as another (or no) document, or as the path with no pages.
             shown = _okular(w.service, "currentDocument")
             if not shown or not _same(shown, path) or _int(_okular(w.service, "pages")) < 1:
                 raise ViewerError(f"cannot open {path}")
@@ -193,13 +197,20 @@ def file_url(path: str, fragment: str | None = None) -> str:
     return url if fragment is None else f"{url}#{quote(fragment, safe='/:')}"
 
 
-def open_url(service: str, url: str) -> None:
-    """Load ``url`` in the window ``service`` (Okular closes the shown document first).
+def open_url(service: str, url: str) -> bool:
+    """Load ``url`` in the window ``service`` (Okular closes the shown document first);
+    False if Okular did not answer within ``TIMEOUT``.
 
-    openDocument is a no-reply call: it returns before the document is loaded; see
-    ``wait_loaded``.
+    Okular answers once it has loaded a local file, but a forward search
+    (``#src:``) may move the page later; see ``wait_loaded``. For a file it cannot
+    load, Okular shows a modal error dialog and answers only once the user closes it:
+    it then shows the path with no pages, which the callers report as ``cannot open``.
     """
-    _okular(service, "openDocument", url)
+    try:
+        _okular(service, "openDocument", url)
+    except Timeout:
+        return False
+    return True
 
 
 def window(service: str) -> Window:

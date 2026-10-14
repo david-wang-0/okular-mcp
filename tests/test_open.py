@@ -4,6 +4,7 @@ The new-window path is faked at ``viewer.new_window``; nothing starts Okular.
 """
 
 import os
+import time
 
 import pytest
 
@@ -116,6 +117,20 @@ def test_open_load_failure_exits_1(capsys, two_windows, pdfs, new_windows, monke
     assert run(capsys, pdfs["c"]) == (1, "", f"okular-mcp-open: cannot open {pdfs['c']}\n")
 
 
+def test_open_broken_pdf_behind_an_error_dialog_exits_1_at_once(capsys, two_windows, pdfs, new_windows):
+    """No wait for the document to show: Okular did not answer and shows it with no pages."""
+    two_windows.docs[pdfs["c"]] = "dialog"
+    t = time.monotonic()
+    assert run(capsys, pdfs["c"]) == (1, "", f"okular-mcp-open: cannot open {pdfs['c']}\n")
+    assert time.monotonic() - t < 1
+
+
+def test_open_slow_load_that_finishes_exits_0(capsys, two_windows, pdfs, new_windows, monkeypatch):
+    monkeypatch.setattr(viewer, "POLL", 0)
+    two_windows.docs[pdfs["c"]] = "slow"
+    assert run(capsys, pdfs["c"]) == (0, f"{pdfs['c']}: page 1 of 9\n", "")
+
+
 def test_open_missing_file_exits_1(capsys, two_windows, tmp_path, new_windows):
     gone = str(tmp_path / "gone.pdf")
     assert run(capsys, gone) == (1, "", f"okular-mcp-open: no such file: {gone}\n")
@@ -155,6 +170,15 @@ def test_forward_in_the_window_showing_the_pdf(capsys, two_windows, pdfs, new_wi
     assert calls == [(tex, 40, pdfs["a"])]
     assert two_windows.methods() == [("org.kde.okular-100", "openDocument", viewer.file_url(pdfs["a"], f"src:40 {tex}"))]
     assert two_windows.fragments == [f"src:40 {tex}"] and new_windows == []
+
+
+def test_forward_broken_pdf_in_the_window_showing_it_exits_1(capsys, two_windows, pdfs, new_windows, synctex_page, tmp_path):
+    pages, _ = synctex_page
+    tex = str(tmp_path / "a.tex")
+    pages[(tex, 3)] = 2
+    two_windows.docs[pdfs["a"]] = "dialog"
+    assert run(capsys, "--tex", tex, "--line", "3", pdfs["a"]) == (
+        1, "", f"okular-mcp-open: cannot open {pdfs['a']}\n")
 
 
 def test_forward_into_a_new_window(capsys, two_windows, pdfs, new_windows, synctex_page):

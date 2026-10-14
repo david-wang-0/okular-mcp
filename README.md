@@ -70,7 +70,9 @@ the blank line after it, to the line it is on.
 
 `goto` fails with `no such file: <path>` for a path that does not exist, `cannot open <path>`
 if Okular fails to load it, and `page N outside 1-M` before moving if the page is out of
-range.
+range. For a file it cannot load, Okular shows a modal error dialog and answers the
+D-Bus call only once the user closes it, so `goto` (and `okular-mcp-open`) take a
+few seconds to report `cannot open`; the dialog stays in Okular until it is closed.
 
 Errors reach the model as their message (as an MCP tool error), not as a
 generic "Error executing tool".

@@ -101,10 +101,17 @@ def _check(pdf: str) -> None:
         raise Failure(f"no such file: {pdf}")
 
 
-def _into_new_window(url: str, pdf: str, page: int | None = None) -> viewer.Window:
-    service = viewer.new_window(OPEN_TIMEOUT)
-    viewer.open_url(service, url)
+def _load(service: str, url: str, pdf: str, page: int | None = None) -> viewer.Window:
+    """Open ``url`` in ``service`` and wait for ``pdf`` (on ``page``) to show."""
+    if not viewer.open_url(service, url):
+        w = viewer.window(service)  # an error dialog about the file, or a slow load
+        if not (w.path and os.path.realpath(w.path) == os.path.realpath(pdf) and w.pages >= 1):
+            raise Failure(f"cannot open {pdf}")
     return viewer.wait_loaded(service, pdf, page, OPEN_TIMEOUT)
+
+
+def _into_new_window(url: str, pdf: str, page: int | None = None) -> viewer.Window:
+    return _load(viewer.new_window(OPEN_TIMEOUT), url, pdf, page)
 
 
 def open_pdf(pdf: str) -> viewer.Window:
@@ -123,8 +130,7 @@ def forward(tex: str, line: int, pdf: str) -> viewer.Window:
     w = viewer.showing(pdf)
     if w is None:
         return _into_new_window(url, pdf, page)
-    viewer.open_url(w.service, url)
-    return viewer.wait_loaded(w.service, pdf, page, OPEN_TIMEOUT)
+    return _load(w.service, url, pdf, page)
 
 
 def run(argv: list[str]) -> int:
