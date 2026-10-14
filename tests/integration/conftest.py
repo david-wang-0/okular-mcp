@@ -327,6 +327,9 @@ def session(tmp_path_factory):
 @pytest.fixture(scope="session")
 def mcp(session):
     """The real okular-mcp server over stdio, on the private bus."""
+    import mcpclient
+    if mcpclient.Client is None:
+        pytest.skip("the stdio client needs mcp >= 2 (mcp.Client)")
     cmd = entry_point("okular-mcp")
     with open(session.logs / "okular-mcp.log", "w") as log:
         server = Server(cmd[0], cmd[1:], env=session.env, errlog=log)

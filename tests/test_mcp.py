@@ -12,8 +12,12 @@ import re
 
 import pytest
 
+import mcpclient
 from fakes import FakeBin, entry_point
 from mcpclient import Server, coverage_env, data, text
+
+if mcpclient.Client is None:  # pragma: no cover
+    pytest.skip("the stdio client needs mcp >= 2 (mcp.Client)", allow_module_level=True)
 
 NO_DOCUMENT = "no Okular window with a PDF open"
 PREFIX = re.compile(r"^Error executing tool \w+: ")
