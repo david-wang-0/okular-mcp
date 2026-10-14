@@ -187,6 +187,21 @@ def test_c2_tex_first_word_of_a_source_line(tools, pdf):
                            ["synctex", "view", "-i", f"7:0:{MAIN}", "-o", pdf]]
 
 
+@pytest.mark.parametrize("source", ["Line one.\nThe first word.\n", "Line one.\nThe first word.\n\nNext.\n"])
+def test_c2_tex_no_first_word_fix_onto_a_blank_or_missing_line(tools, pdf, tmp_path, source):
+    """synctex view of a line with no text (past the end of an \\input file, or blank)
+    gives a nearby line's records, which may start right at the word's end: that is no
+    reason to move the word to that line."""
+    tex = tmp_path / "part.tex"
+    tex.write_text(source)
+    x0, y0, x1, y1 = box(0, 0)
+    t = tools(TEX_PAGE, edit={(7, 0, 0): (str(tex), 2)}, views={(3, str(tex)): [(7, x1, y1 - 2)]})
+    assert sl.tex_lines(pdf, sl.locate("alpha", pdf, 7)) == [{"file": str(tex), "lines": [2, 2]}]
+    assert not [c for batch in t.calls for c in batch if c[:2] == ["synctex", "view"]]
+    tex.write_text("Line one.\nThe first word.\nThe next line.\n")  # with text there, the fix applies
+    assert sl.tex_lines(pdf, sl.locate("alpha", pdf, 7)) == [{"file": str(tex), "lines": [3, 3]}]
+
+
 def test_c2_tex_last_word_of_a_selection_that_starts_a_source_line(tools, pdf):
     x0, y0, x1, y1 = box(0, 3)
     tools(TEX_PAGE, edit={(7, 0, 0): (MAIN, 5), (7, 0, 3): (MAIN, 5)},
@@ -361,6 +376,20 @@ def test_c2_real_tools_first_word_quirk_is_real(compiled):
     out = subprocess.run(sl._edit_cmd(pdf, 1, w), capture_output=True, text=True).stdout
     assert sl.edit(out, pdf) == (main, 5)
     assert sl.tex_lines(pdf, m) == [{"file": main, "lines": [6, 6]}]
+
+
+def test_c2_real_tools_first_word_of_the_last_line_of_an_input_file(tmp_path):
+    """The paragraph that ends an \\input file: its first word stays on its own line
+    (synctex view of the line after the file's end points right after that word)."""
+    if not all(shutil.which(t) for t in ("pdflatex", "synctex", "pdftotext")):
+        pytest.skip("needs pdflatex, synctex and pdftotext")
+    (tmp_path / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\n\\input{part}\n\\end{document}\n")
+    (tmp_path / "part.tex").write_text("Page charlie words here.\n\nThe quick brown fox jumps over the lazy dog.\n")
+    subprocess.run(["pdflatex", "-synctex=1", "-interaction=batchmode", "main.tex"], cwd=tmp_path,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    pdf, part = str(tmp_path / "main.pdf"), str(tmp_path / "part.tex")
+    for text in ("The quick brown fox", "The quick brown fox jumps over the lazy dog."):
+        assert sl.tex_lines(pdf, sl.locate(text, pdf, 1, 1)) == [{"file": part, "lines": [3, 3]}], text
 
 
 def test_real_forward_page(compiled):

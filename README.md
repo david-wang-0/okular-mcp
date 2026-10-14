@@ -64,8 +64,8 @@ One entry per source file, in document order. A selection may start or end insid
 a word, and a word TeX hyphenated at a line end matches with or without its
 hyphen. pdfTeX tags the space after a source line's first word with the line
 before, so `synctex edit` alone gives that word the previous line; the server
-checks with `synctex view` whether the next line starts right after the word and
-then takes that line, and it maps a paragraph's last word, which SyncTeX puts on
+checks with `synctex view` whether the next line, if it has text, starts right
+after the word and then takes that line, and it maps a paragraph's last word, which SyncTeX puts on
 the blank line after it, to the line it is on.
 
 `goto` fails with `no such file: <path>` for a path that does not exist, `cannot open <path>`

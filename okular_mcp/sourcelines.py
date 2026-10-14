@@ -272,16 +272,28 @@ def _starts_next_line(w: Word, page: int, records: list[tuple[int, float, float]
                for p, x, y in records)
 
 
-def _nonblank(file: str, line: int, texts: dict[str, list[str] | None]) -> int:
-    """``line``, or the nearest non-blank line before it when it is blank: the last word
-    of a paragraph maps to the blank line that ends it."""
+def _lines(file: str, texts: dict[str, list[str] | None]) -> list[str] | None:
+    """The lines of ``file`` (None if unreadable), read once into ``texts``."""
     if file not in texts:
         try:
             with open(file, encoding="utf-8", errors="replace") as f:
                 texts[file] = f.read().splitlines()
         except OSError:
             texts[file] = None
-    lines = texts[file]
+    return texts[file]
+
+
+def _may_start(file: str, line: int, texts: dict[str, list[str] | None]) -> bool:
+    """A word can start source line ``line`` only if it has text: ``synctex view`` of a
+    blank line, or of one past the end of the file, gives the records of a line nearby."""
+    lines = _lines(file, texts)
+    return lines is None or (line <= len(lines) and bool(lines[line - 1].strip()))
+
+
+def _nonblank(file: str, line: int, texts: dict[str, list[str] | None]) -> int:
+    """``line``, or the nearest non-blank line before it when it is blank: the last word
+    of a paragraph maps to the blank line that ends it."""
+    lines = _lines(file, texts)
     if not lines or line > len(lines):
         return line
     n = line
@@ -298,13 +310,14 @@ def tex_lines(pdf: str, match: Match | None, timeout: float = 2.0) -> list[dict]
     pdf = os.path.abspath(pdf)
     if not synctex_file(pdf):
         return None
+    texts: dict[str, list[str] | None] = {}
     try:
         deadline = _Deadline(timeout)
         points = _points(match)
         hits = [edit(out, pdf) for out in
                 _run_all([_edit_cmd(pdf, match.page, w) for w in points], deadline)]
         # The first-word fix, for the two ends of the range (a no-op elsewhere).
-        ends = {i for i in (0, len(points) - 1) if hits[i]}
+        ends = {i for i in (0, len(points) - 1) if hits[i] and _may_start(hits[i][0], hits[i][1] + 1, texts)}
         checks = {i: ["synctex", "view", "-i", f"{hits[i][1] + 1}:0:{hits[i][0]}", "-o", pdf] for i in ends}
         for i, out in zip(checks, _run_all(list(checks.values()), deadline)):
             if _starts_next_line(points[i], match.page, view(out)):
@@ -312,7 +325,6 @@ def tex_lines(pdf: str, match: Match | None, timeout: float = 2.0) -> list[dict]
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
     files: dict[str, list[int]] = {}
-    texts: dict[str, list[str] | None] = {}
     for hit in hits:
         if hit:
             files.setdefault(hit[0], []).append(_nonblank(hit[0], hit[1], texts))
