@@ -23,6 +23,7 @@ Homepage = "https://github.com/david-wang-0/okular-mcp"
 [project.scripts]
 okular-mcp = "okular_mcp.server:main"
 okular-mcp-hook = "okular_mcp.hook:main"
+okular-mcp-open = "okular_mcp.open:main"
 
 [project.optional-dependencies]
 test = ["pytest"]

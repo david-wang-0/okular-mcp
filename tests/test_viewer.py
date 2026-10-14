@@ -91,10 +91,10 @@ def test_c3_shown_document_is_not_reopened(two_windows, pdfs):
 
 def test_c3_unshown_document_opens_in_first_window_then_checks_then_moves(two_windows, pdfs):
     e = viewer.goto(5, pdfs["c"])
-    assert two_windows.methods() == [("org.kde.okular-100", "openDocument", pdfs["c"]),
+    assert two_windows.methods() == [("org.kde.okular-100", "openDocument", viewer.file_url(pdfs["c"])),
                                      ("org.kde.okular-100", "goToPage", "5")]
     seq = two_windows.methods(reads=True)
-    i_open = seq.index(("org.kde.okular-100", "openDocument", pdfs["c"]))
+    i_open = seq.index(("org.kde.okular-100", "openDocument", viewer.file_url(pdfs["c"])))
     i_go = seq.index(("org.kde.okular-100", "goToPage", "5"))
     assert ("org.kde.okular-100", "pages") in seq[i_open + 1:i_go]
     assert e == entry("org.kde.okular-100", pdfs["c"], 5, 5, True)
@@ -103,7 +103,7 @@ def test_c3_unshown_document_opens_in_first_window_then_checks_then_moves(two_wi
 def test_c3_opens_into_first_window_even_without_a_document(bus, pdfs):
     b = bus({1: {"path": "", "page": 0, "pages": 0}}, {"org.kde.okular-1": 1}, docs={pdfs["a"]: 3})
     assert viewer.goto(2, pdfs["a"]) == entry("org.kde.okular-1", pdfs["a"], 2, 3, True)
-    assert b.methods() == [("org.kde.okular-1", "openDocument", pdfs["a"]), ("org.kde.okular-1", "goToPage", "2")]
+    assert b.methods() == [("org.kde.okular-1", "openDocument", viewer.file_url(pdfs["a"])), ("org.kde.okular-1", "goToPage", "2")]
 
 
 def test_c3_without_path_uses_the_active_entry(two_windows, pdfs):
@@ -131,7 +131,7 @@ def test_c3_out_of_range_raised_before_goto(two_windows, pdfs):
             viewer.goto(page, pdfs["a"])
     with pytest.raises(ValueError, match=r"^page 6 outside 1-5$"):
         viewer.goto(6, pdfs["c"])
-    assert ("org.kde.okular-100", "openDocument", pdfs["c"]) in two_windows.methods()
+    assert ("org.kde.okular-100", "openDocument", viewer.file_url(pdfs["c"])) in two_windows.methods()
     assert not [m for m in two_windows.methods() if m[1] == "goToPage"]
 
 
@@ -253,3 +253,129 @@ def test_call_timeout_raises(which, monkeypatch):
     monkeypatch.setattr(viewer.subprocess, "run", run)
     with pytest.raises(viewer.ViewerError, match="timed out"):
         viewer._call("svc")
+
+
+# --- opening documents: file_url, open_url, showing, new_window, wait_loaded ---
+
+@pytest.mark.parametrize("path, fragment, url", [
+    ("/a/b.pdf", None, "file:///a/b.pdf"),
+    ("/a b/c#1%.pdf", None, "file:///a%20b/c%231%25.pdf"),
+    ("/a/b.pdf", "src:12 /t x/m.tex", "file:///a/b.pdf#src:12%20/t%20x/m.tex"),
+])
+def test_file_url(path, fragment, url):
+    assert viewer.file_url(path, fragment) == url
+    assert url.count("#") == (fragment is not None)
+
+
+def test_file_url_is_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert viewer.file_url("x.pdf") == "file://" + str(tmp_path / "x.pdf")
+
+
+def test_c3_goto_opens_with_a_file_url(two_windows, tmp_path):
+    """A bare path with a "#" in it hangs Okular."""
+    odd = tmp_path / "a b#c.pdf"
+    odd.write_bytes(b"%PDF-1.4\n")
+    assert viewer.goto(2, str(odd))["path"] == str(odd)
+    assert ("org.kde.okular-100", "openDocument", "file://" + str(tmp_path) + "/a%20b%23c.pdf") \
+        in two_windows.methods()
+
+
+def test_showing_compares_real_paths(two_windows, pdfs, tmp_path):
+    link = tmp_path / "l.pdf"
+    link.symlink_to(pdfs["b"])
+    assert viewer.showing(str(link)).service == "org.kde.okular-200"
+    assert viewer.showing(pdfs["c"]) is None
+
+
+class FakeOkular:
+    """Fake subprocess.Popen for ``okular``: the new process joins the fake bus after
+    ``after`` polls (None: never), or has exited with ``status``."""
+
+    pid = 4242
+
+    def __init__(self, bus, after=1, status=None):
+        self.bus, self.after, self.status, self.argv, self.kw, self.polls = bus, after, status, None, None, 0
+
+    def __call__(self, argv, **kw):
+        self.argv, self.kw = argv, kw
+        return self
+
+    def poll(self):
+        self.polls += 1
+        if self.status is None and self.after is not None and self.polls > self.after:
+            self.bus.procs[self.pid] = {"path": "", "page": 0, "pages": 0}
+            self.bus.names[f"org.kde.okular-{self.pid}"] = self.pid
+        return self.status
+
+    @property
+    def returncode(self):
+        return self.status
+
+
+@pytest.fixture
+def launch(monkeypatch, which):
+    which("qdbus", "okular")
+    monkeypatch.setattr(viewer, "POLL", 0)
+
+    def install(bus, **kw):
+        fake = FakeOkular(bus, **kw)
+        monkeypatch.setattr(viewer.subprocess, "Popen", fake)
+        return fake
+    return install
+
+
+def test_new_window_starts_okular_without_arguments_detached(two_windows, launch):
+    fake = launch(two_windows, after=3)
+    assert viewer.new_window(5) == "org.kde.okular-4242"
+    assert fake.argv == ["/usr/bin/okular"]
+    assert fake.kw["start_new_session"] is True
+    assert all(fake.kw[k] == subprocess.DEVNULL for k in ("stdin", "stdout", "stderr"))
+
+
+def test_new_window_okular_exits(two_windows, launch):
+    launch(two_windows, status=1)
+    with pytest.raises(ViewerError, match=r"^Okular exited \(status 1\)"):
+        viewer.new_window(5)
+
+
+def test_new_window_never_appears(two_windows, launch):
+    launch(two_windows, after=None)
+    with pytest.raises(ViewerError, match="did not appear on the session bus within 0.05 s"):
+        viewer.new_window(0.05)
+
+
+def test_new_window_without_okular(two_windows, which):
+    which("qdbus")
+    with pytest.raises(ViewerError, match="okular not found"):
+        viewer.new_window(1)
+
+
+def test_wait_loaded_returns_once_on_the_page(two_windows, pdfs, monkeypatch):
+    monkeypatch.setattr(viewer, "POLL", 0)
+    w = viewer.wait_loaded("org.kde.okular-100", pdfs["a"], page=3, timeout=5)
+    assert (w.path, w.page, w.pages) == (pdfs["a"], 3, 10)
+    assert len([m for m in two_windows.methods(reads=True) if m[1] == "currentDocument"]) == 1
+
+
+def test_wait_loaded_without_page_waits_for_it_to_settle(two_windows, pdfs, monkeypatch):
+    monkeypatch.setattr(viewer, "POLL", 0)
+    assert viewer.wait_loaded("org.kde.okular-100", pdfs["a"], timeout=5, settle=3).page == 3
+    assert len([m for m in two_windows.methods(reads=True) if m[1] == "currentDocument"]) == 3
+
+
+def test_wait_loaded_takes_another_page_once_it_stays(two_windows, pdfs, monkeypatch):
+    monkeypatch.setattr(viewer, "POLL", 0)
+    assert viewer.wait_loaded("org.kde.okular-100", pdfs["a"], page=7, timeout=5, settle=2).page == 3
+
+
+def test_wait_loaded_cannot_open(two_windows, pdfs, monkeypatch):
+    monkeypatch.setattr(viewer, "POLL", 0.01)
+    with pytest.raises(ViewerError, match=rf"^cannot open {re.escape(pdfs['c'])}$"):
+        viewer.wait_loaded("org.kde.okular-100", pdfs["c"], timeout=0.05)
+
+
+def test_open_url_is_open_document(two_windows):
+    viewer.open_url("org.kde.okular-200", "file:///x.pdf#src:3%20/t.tex")
+    assert two_windows.methods() == [("org.kde.okular-200", "openDocument", "file:///x.pdf#src:3%20/t.tex")]
+    assert two_windows.fragments == ["src:3 /t.tex"]

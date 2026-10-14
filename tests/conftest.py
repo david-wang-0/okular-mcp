@@ -3,6 +3,8 @@
 Nothing here talks to a real D-Bus or starts Okular.
 """
 
+from urllib.parse import unquote, urlsplit
+
 import pytest
 
 from okular_mcp import viewer
@@ -15,12 +17,15 @@ class Bus:
     """``procs`` maps pid -> {"path", "page", "pages"}; ``names`` maps D-Bus name -> pid
     (None makes the pid lookup fail). ``broken`` pids fail their property calls.
     ``docs`` maps a path to its page count, for openDocument (default 9 pages; None
-    makes the load fail: Okular is then left with no document).
+    makes the load fail: Okular is then left with no document). openDocument takes a
+    file:// URL; ``forward`` maps its fragment (``src:<line> <tex>``) to the page Okular
+    then shows (default 1), and ``fragments`` records the fragments it got.
     """
 
     def __init__(self, procs, names, broken=(), docs=None):
         self.procs, self.names, self.broken = procs, names, set(broken)
         self.docs, self.calls = docs or {}, []
+        self.forward, self.fragments = {}, []
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -43,8 +48,13 @@ class Bus:
         if name in ("currentPage", "pages"):
             return str(p["page" if name == "currentPage" else "pages"])
         if name == "openDocument":
-            n = self.docs.get(rest[0], 9)
-            p.update(path=rest[0], page=1, pages=n) if n else p.update(path="", page=0, pages=0)
+            url = urlsplit(rest[0])
+            assert url.scheme == "file", "openDocument takes a file:// URL"
+            path, fragment = unquote(url.path), unquote(url.fragment)
+            self.fragments.append(fragment)
+            n = self.docs.get(path, 9)
+            page = self.forward.get(fragment, 1)
+            p.update(path=path, page=page, pages=n) if n else p.update(path="", page=0, pages=0)
         elif name == "goToPage":
             p["page"] = int(rest[0])
         else:

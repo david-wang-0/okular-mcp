@@ -5,7 +5,8 @@ you are reading in [Okular](https://okular.kde.org/)**: which documents are open
 and on what page, the text you have selected with the mouse (with its LaTeX
 source lines when the PDF has SyncTeX data), and (when you ask) showing you a page.
 A prompt hook for Claude Code adds the document, the page and your selection to
-every prompt you type in a project that contains the PDF.
+every prompt you type in a project that contains the PDF, and `okular-mcp-open`
+lets LaTeX tools open a PDF or do a forward search in Okular.
 
 This server does not read or write PDF content. It implements the viewer-state
 contract in [`CONTRACT.md`](CONTRACT.md), and the PDF work is done by sibling
@@ -116,6 +117,45 @@ on a 54-page paper with SyncTeX data, the whole hook takes about 0.26 s with a
 selection found and mapped (about 0.14 s of it for the selection part) and about
 0.13 s without one.
 
+## LaTeX: `okular-mcp-open`
+
+```sh
+okular-mcp-open <pdf>                                         # open the PDF
+okular-mcp-open --tex <file> --line <n> [--column <n>] <pdf>  # forward search
+```
+
+The same command line as `vscode-pdf-mcp-open`, so a LaTeX tool can be pointed
+at either viewer. A window that already shows the PDF is left as it is;
+otherwise a new Okular window opens it (`okular` started without arguments, which
+never joins a running Okular as a tab). The forward search asks `synctex view`
+for the page first, then hands Okular the URL `file://<pdf>#src:<line> <file>`
+(the `--unique` forward search), in the window that shows the PDF or else a new
+one. Okular has no column in a forward search, so `--column` is accepted and
+ignored (a negative one means none, as LaTeX Workshop may pass). It prints
+`<pdf>: page <n> of <pages>` (what Okular shows once it has settled), exits 1
+with the reason on stderr when it cannot (`no such file: <pdf>`, `cannot open
+<pdf>`, `no SyncTeX data for <file>:<line> in <pdf>`, Okular not starting) and
+2 on bad arguments.
+
+A forward search opens the document anew, like `okular --unique`, so Okular asks
+to save unsaved annotations first; save in Okular before you jump.
+
+LaTeX Workshop, in VS Code's `settings.json`:
+
+```json
+"latex-workshop.view.pdf.viewer": "external",
+"latex-workshop.view.pdf.external.viewer.command": "okular-mcp-open",
+"latex-workshop.view.pdf.external.viewer.args": ["%PDF%"],
+"latex-workshop.view.pdf.external.synctex.command": "okular-mcp-open",
+"latex-workshop.view.pdf.external.synctex.args": ["--tex", "%TEX%", "--line", "%LINE%", "%PDF%"]
+```
+
+Then *View LaTeX PDF* opens Okular and LaTeX Workshop's forward search
+(Ctrl+Alt+J) lands in it. Use the absolute path of `okular-mcp-open` as the
+command if VS Code does not have it on its `PATH`. Inverse search is Okular's
+own: Shift+click in the page opens the source in the editor set under Settings →
+Configure Okular → Editor.
+
 ## No reload tool, and saving
 
 Nothing here writes the PDF, and there is no reload tool (C4). Okular's
@@ -135,8 +175,8 @@ Linux with KDE's Okular on the session D-Bus, plus:
 - optional: `pdftotext` (poppler; `poppler` or `poppler-utils`), to find the page
   of a selection; without it, `page` is the current page and the hook leaves
   the selection out
-- optional: `synctex` (TeX Live), for the `tex` source lines and the hook's
-  `Source:` lines
+- optional: `synctex` (TeX Live), for the `tex` source lines, the hook's
+  `Source:` lines and `okular-mcp-open --tex`
 - Python 3.10+; `mcp` is the only dependency
 
 ## Install
@@ -147,8 +187,8 @@ With [uv](https://docs.astral.sh/uv/):
 uv tool install git+https://github.com/david-wang-0/okular-mcp
 ```
 
-This installs both `okular-mcp` (the server) and `okular-mcp-hook`. Register the
-server with your MCP client. Claude Code, user scope:
+This installs `okular-mcp` (the server), `okular-mcp-hook` and
+`okular-mcp-open`. Register the server with your MCP client. Claude Code, user scope:
 
 ```sh
 claude mcp add okular -s user -- okular-mcp
@@ -196,8 +236,10 @@ Okular or touch the real bus. With `pdflatex`, `synctex` and `pdftotext`
 installed, `tests/test_sourcelines.py` also compiles a small LaTeX document and
 checks the selections' pages and source lines with the real tools.
 `okular_mcp/viewer.py` is the only Okular-specific module (`windows`, `entries`,
-`active`, `goto`), `selection.py` reads the system selection, `sourcelines.py`
-finds it on the page and maps it to source lines, `hook.py` is the prompt hook.
+`active`, `goto`, and `new_window`, `open_url`, `wait_loaded` for
+`okular-mcp-open`), `selection.py` reads the system selection, `sourcelines.py`
+finds it on the page and maps it to source lines, `hook.py` is the prompt hook,
+`open.py` is `okular-mcp-open`.
 
 ## License
 

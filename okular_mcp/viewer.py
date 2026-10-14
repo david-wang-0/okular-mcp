@@ -14,8 +14,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 from .env import ensure_session_env
 
@@ -160,7 +162,7 @@ def goto(page: int, path: str | None = None) -> dict[str, Any]:
         w = next((w for w in ws if w.path and _same(w.path, path)), None)
         if w is None:
             w = ws[0]
-            _okular(w.service, "openDocument", path)
+            open_url(w.service, file_url(path))
             # openDocument returns nothing: a load failure shows as another (or no) document.
             shown = _okular(w.service, "currentDocument")
             if not shown or not _same(shown, path) or _int(_okular(w.service, "pages")) < 1:
@@ -173,3 +175,93 @@ def goto(page: int, path: str | None = None) -> dict[str, Any]:
         if e["window"] == w.service:
             return {**e, "page": page}
     raise ViewerError(f"Okular window {w.service} closed while moving to page {page}")
+
+
+# --- opening documents (okular-mcp-open) ---
+
+POLL = 0.1
+"""Seconds between two looks at a window while waiting for Okular."""
+
+
+def file_url(path: str, fragment: str | None = None) -> str:
+    """A ``file://`` URL for ``path``, with ``fragment`` (e.g. ``src:12 /abs/x.tex``).
+
+    openDocument takes a URL: a bare path with a ``#`` in it hangs Okular, so the
+    path part is percent-encoded and the fragment is the only ``#``.
+    """
+    url = "file://" + quote(os.path.abspath(path), safe="/")
+    return url if fragment is None else f"{url}#{quote(fragment, safe='/:')}"
+
+
+def open_url(service: str, url: str) -> None:
+    """Load ``url`` in the window ``service`` (Okular closes the shown document first).
+
+    openDocument is a no-reply call: it returns before the document is loaded; see
+    ``wait_loaded``.
+    """
+    _okular(service, "openDocument", url)
+
+
+def window(service: str) -> Window:
+    """The current state of the window ``service``."""
+    return Window(service, 0, _okular(service, "currentDocument"),
+                  _int(_okular(service, "currentPage")), _int(_okular(service, "pages")))
+
+
+def showing(path: str) -> Window | None:
+    """The first window that shows ``path`` (compared after resolving symlinks)."""
+    return next((w for w in windows() if w.path and _same(w.path, path)), None)
+
+
+def new_window(timeout: float = 15.0) -> str:
+    """Start a new Okular window and return its D-Bus service once it answers.
+
+    ``okular`` without arguments never hands over to a running Okular (``okular
+    <file>`` may, as a tab), so this is always a new process: one window.
+    """
+    ensure_session_env()
+    exe = shutil.which("okular")
+    if not exe:
+        raise ViewerError("okular not found on PATH")
+    proc = subprocess.Popen([exe], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+    service, end = f"org.kde.okular-{proc.pid}", time.monotonic() + timeout
+    while time.monotonic() < end:
+        if proc.poll() is not None:
+            raise ViewerError(f"Okular exited (status {proc.returncode}) before it was on the session bus")
+        try:
+            if service in _services():
+                _okular(service, "currentDocument")  # the /okular object is there too
+                return service
+        except ViewerError:
+            pass
+        time.sleep(POLL)
+    raise ViewerError(f"Okular did not appear on the session bus within {timeout:g} s")
+
+
+def wait_loaded(service: str, path: str, page: int | None = None, timeout: float = 10.0,
+                settle: int = 3) -> Window:
+    """Wait until ``service`` shows ``path`` and its page has settled; ``cannot open <path>``
+    if it does not show the document within ``timeout``.
+
+    The page has settled when it is ``page`` or, without ``page`` (or if Okular never
+    gets there), unchanged over ``settle`` looks in a row; after ``timeout`` the window
+    is taken as it is.
+    """
+    end, last, same, w = time.monotonic() + timeout, None, 0, None
+    while True:
+        try:
+            cur = window(service)
+        except (ViewerError, ValueError):
+            cur = None
+        if cur and cur.path and _same(cur.path, path) and cur.pages >= 1:
+            w = cur
+            same = same + 1 if cur.page == last else 1
+            last = cur.page
+            if cur.page == page or (page is None and same >= settle) or same >= settle + 5:
+                return w
+        if time.monotonic() >= end:
+            if w is not None:
+                return w
+            raise ViewerError(f"cannot open {path}")
+        time.sleep(POLL)
