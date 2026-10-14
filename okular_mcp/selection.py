@@ -17,9 +17,9 @@ class SelectionError(RuntimeError):
     pass
 
 
-def _run(cmd: list[str]) -> str:
+def _run(cmd: list[str], timeout: float) -> str:
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
         raise SelectionError(f"{cmd[0]} timed out") from e
     if out.returncode != 0:
@@ -30,8 +30,8 @@ def _run(cmd: list[str]) -> str:
     return out.stdout
 
 
-def read(source: str = "primary") -> str:
-    """``source`` is ``primary`` (mouse selection) or ``clipboard``."""
+def read(source: str = "primary", timeout: float = 5.0) -> str:
+    """``source`` is ``primary`` (mouse selection) or ``clipboard``; ``timeout`` in seconds."""
     if source not in ("primary", "clipboard"):
         raise SelectionError("source must be 'primary' or 'clipboard'")
     ensure_session_env()
@@ -39,9 +39,9 @@ def read(source: str = "primary") -> str:
         args = ["wl-paste", "--no-newline"]
         if source == "primary":
             args.insert(1, "--primary")
-        return _run(args)
+        return _run(args, timeout)
     if shutil.which("xclip"):
-        return _run(["xclip", "-o", "-selection", source])
+        return _run(["xclip", "-o", "-selection", source], timeout)
     if shutil.which("xsel"):
-        return _run(["xsel", "-o", "--primary" if source == "primary" else "--clipboard"])
+        return _run(["xsel", "-o", "--primary" if source == "primary" else "--clipboard"], timeout)
     raise SelectionError("no clipboard tool found: install wl-clipboard (Wayland) or xclip/xsel (X11)")

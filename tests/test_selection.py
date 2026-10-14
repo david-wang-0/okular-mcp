@@ -107,3 +107,13 @@ def test_timeout_raises(fake):
     fake(("xclip",), exc=subprocess.TimeoutExpired("xclip", 5))
     with pytest.raises(selection.SelectionError, match="timed out"):
         selection.read()
+
+
+def test_timeout_is_passed_on(fake, monkeypatch):
+    fake(("xclip",))
+    seen = []
+    monkeypatch.setattr(selection.subprocess, "run",
+                        lambda cmd, **kw: seen.append(kw["timeout"]) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    selection.read(timeout=0.25)
+    selection.read()
+    assert seen == [0.25, 5.0]

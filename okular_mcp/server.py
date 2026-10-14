@@ -14,7 +14,7 @@ except ImportError:  # mcp 1.x
 
 from mcp.types import ToolAnnotations
 
-from . import selection, viewer
+from . import selection, sourcelines, viewer
 
 READ = ToolAnnotations(readOnlyHint=True)
 NAVIGATE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True)
@@ -67,7 +67,7 @@ def viewer_state() -> list[dict[str, Any]]:
 def get_selection(source: str = "primary") -> dict[str, Any]:
     """Text the user has selected with the mouse, with the document and page.
 
-    `source="primary"`: the system primary selection (text selected with the mouse), with `viewer`, `path` and `page` of the active Okular document when one is open. `source="clipboard"`: the clipboard, without a document. `text` is "" when nothing is selected."""
+    `source="primary"`: the system primary selection (text selected with the mouse), with `viewer`, `path` and `page` of the active Okular document when one is open: `page` is the page among the current one and those next to it where the selected words are, else the current page; `tex` lists their LaTeX source lines (`[{"file", "lines": [first, last]}]`) when the PDF has SyncTeX data. `source="clipboard"`: the clipboard, without a document. `text` is "" when nothing is selected."""
     if source not in SOURCES:
         raise ValueError("source must be 'primary' or 'clipboard'")
     result: dict[str, Any] = {"text": selection.read(source), "source": source}
@@ -77,6 +77,12 @@ def get_selection(source: str = "primary") -> dict[str, Any]:
         except viewer.ViewerError:
             return result
         result.update(viewer=e["viewer"], path=e["path"], page=e["page"])
+        found = sourcelines.locate(result["text"], e["path"], e["page"], e["pages"])
+        if found:
+            result["page"] = found.page
+            tex = sourcelines.tex_lines(e["path"], found)
+            if tex:
+                result["tex"] = tex
     return result
 
 

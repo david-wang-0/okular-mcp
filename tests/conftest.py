@@ -91,3 +91,81 @@ def two_windows(bus, pdfs):
 @pytest.fixture
 def no_okular(bus):
     return bus({}, {})
+
+
+# --- fake pdftotext and synctex behind sourcelines._run_all ---
+
+def box(i, j):
+    """The grid the fake text layer puts word ``j`` of printed line ``i`` on: (x0, y0, x1, y1)."""
+    return 50.0 + 60 * j, 100.0 + 20 * i, 90.0 + 60 * j, 110.0 + 20 * i
+
+
+class Tools:
+    """Fake ``pdftotext -bbox-layout`` and ``synctex edit``/``view`` (CONTRACT.md C2 ``tex``).
+
+    ``pages`` maps a page number to its printed lines, each a string of words (boxes on
+    the ``box`` grid). ``edit`` maps (page, line i, word j) to the ``Input`` and
+    ``Line`` that ``synctex edit`` reports at that word's centre; ``views`` maps
+    (line, file) to the (page, x, y) results of ``synctex view``. ``fail`` maps a
+    tool name to an exception to raise. ``calls`` records each batch of commands.
+    """
+
+    def __init__(self, pages=None, edit=None, views=None):
+        self.pages, self.edit, self.views = pages or {}, edit or {}, views or {}
+        self.fail, self.calls = {}, []
+
+    def __call__(self, cmds, deadline):
+        self.calls.append(cmds)
+        for c in cmds:
+            if c[0] in self.fail:
+                raise self.fail[c[0]]
+        return [self.run(c) for c in cmds]
+
+    def run(self, cmd):
+        if cmd[0] == "pdftotext":
+            first, last = int(cmd[2]), min(int(cmd[4]), max(self.pages, default=0))
+            return self.xhtml(range(first, last + 1))  # pages not in ``pages`` are empty
+        if cmd[:2] == ["synctex", "edit"]:
+            page, x, y, _ = cmd[3].split(":", 3)
+            for (p, i, j), (inp, line) in self.edit.items():
+                x0, y0, x1, y1 = box(i, j)
+                if p == int(page) and x0 <= float(x) <= x1 and y0 <= float(y) <= y1:
+                    return ("This is SyncTeX command line utility, version 1.5\nSyncTeX result begin\n"
+                            f"Output:/x.pdf\nInput:{inp}\nLine:{line}\nColumn:-1\nOffset:0\nContext:\n"
+                            "SyncTeX result end\n")
+            return "This is SyncTeX command line utility, version 1.5\n"
+        if cmd[:2] == ["synctex", "view"]:
+            line, _, file = cmd[3].split(":", 2)
+            res = self.views.get((int(line), file), [])
+            if not res:
+                return f"SyncTeX Warning: No tag for {file}\n"
+            return ("SyncTeX result begin\n" + "".join(
+                f"Output:/x.pdf\nPage:{p}\nx:{x}\ny:{y}\nh:0\nv:0\nW:10\nH:10\nbefore:\noffset:-1\nmiddle:\nafter:\n"
+                for p, x, y in res) + "SyncTeX result end\n")
+        raise AssertionError(f"unexpected command {cmd}")
+
+    def xhtml(self, numbers):
+        out = ['<?xml version="1.0"?>\n<html><body>\n<doc>']
+        for n in numbers:
+            out.append('  <page width="612.000000" height="792.000000">\n    <flow>\n      <block>')
+            for i, line in enumerate(self.pages.get(n, [])):
+                out.append('        <line xMin="0" yMin="0" xMax="0" yMax="0">')
+                for j, word in enumerate(line.split()):
+                    x0, y0, x1, y1 = box(i, j)
+                    word = word.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    out.append(f'          <word xMin="{x0:f}" yMin="{y0:f}" xMax="{x1:f}" yMax="{y1:f}">{word}</word>')
+                out.append("        </line>")
+            out.append("      </block>\n    </flow>\n  </page>")
+        out.append("</doc>\n</body>\n</html>")
+        return "\n".join(out)
+
+
+@pytest.fixture
+def tools(monkeypatch):
+    from okular_mcp import sourcelines
+
+    def install(pages=None, edit=None, views=None):
+        t = Tools(pages, edit, views)
+        monkeypatch.setattr(sourcelines, "_run_all", t)
+        return t
+    return install

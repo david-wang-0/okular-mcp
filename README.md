@@ -2,8 +2,9 @@
 
 An [MCP](https://modelcontextprotocol.io) server that tells an LLM session **what
 you are reading in [Okular](https://okular.kde.org/)**: which documents are open
-and on what page, the text you have selected with the mouse, and (when you ask)
-showing you a page. A prompt hook for Claude Code adds the document and page to
+and on what page, the text you have selected with the mouse (with its LaTeX
+source lines when the PDF has SyncTeX data), and (when you ask) showing you a page.
+A prompt hook for Claude Code adds the document, the page and your selection to
 every prompt you type in a project that contains the PDF.
 
 This server does not read or write PDF content. It implements the viewer-state
@@ -24,7 +25,7 @@ in both repositories together, never in one.
 | Tool | What it does |
 |---|---|
 | `viewer_state()` | One entry per Okular window with a document open, the active one first (C1) |
-| `get_selection(source="primary")` | The text selected with the mouse (`primary`), attributed to the active document, or the clipboard (`clipboard`), never attributed (C2) |
+| `get_selection(source="primary")` | The text selected with the mouse (`primary`), attributed to the active document and the page it is on, with its LaTeX source lines when the PDF has SyncTeX data; or the clipboard (`clipboard`), never attributed (C2) |
 | `goto(page, path?)` | Show `page` of `path` (default: the active document), opening the file first if no window has it; returns its entry after the move. Meant for "show me where that is", not for the model to navigate on its own (C3) |
 
 An **entry** is
@@ -40,11 +41,31 @@ window that has a document open. With nothing open (or Okular not running),
 `viewer_state` and `goto` without a path fail with a message starting
 `no Okular window with a PDF open`.
 
-`get_selection` returns `{"text", "source"}`, plus `viewer`, `path` and `page` of
-the active entry for `source="primary"` when a document is open. `text` is `""`
-when nothing is selected. The primary selection is system-wide: it is whatever
-was last selected in any window, so it is attributed to Okular's active
-document on trust.
+`get_selection` returns `{"text", "source"}`, plus `viewer`, `path` and `page`
+for `source="primary"` when a document is open. `text` is `""` when nothing is
+selected. The primary selection is system-wide: it is whatever was last selected
+in any window, so it is attributed to Okular's active document on trust, and
+Okular does not say where in the document it is. So the server looks for the
+selected words in the text of the active document's current page, then the next
+page, then the previous one (with poppler's `pdftotext`, the same text layer
+Okular selects from), and `page` is the first page that has them, else the
+current page. When they occur exactly once on that page and the PDF has a
+`.synctex.gz` (or `.synctex`) next to it, `tex` gives their LaTeX source lines,
+from `synctex edit` at the first and last word and one word of each printed line
+between:
+
+```json
+{"text": "...", "source": "primary", "viewer": "okular", "path": "/abs/paper.pdf",
+ "page": 4, "tex": [{"file": "/abs/sec/intro.tex", "lines": [12, 15]}]}
+```
+
+One entry per source file, in document order. A selection may start or end inside
+a word, and a word TeX hyphenated at a line end matches with or without its
+hyphen. pdfTeX tags the space after a source line's first word with the line
+before, so `synctex edit` alone gives that word the previous line; the server
+checks with `synctex view` whether the next line starts right after the word and
+then takes that line, and it maps a paragraph's last word, which SyncTeX puts on
+the blank line after it, to the line it is on.
 
 `goto` fails with `no such file: <path>` for a path that does not exist, `cannot open <path>`
 if Okular fails to load it, and `page N outside 1-M` before moving if the page is out of
@@ -73,14 +94,27 @@ When the active Okular document lies inside the session's working directory
 
 ```
 The user is reading /abs/project/paper.pdf in Okular, page 3 of 12.
+Selected text (page 4):
+the words you selected
+Source: sec/intro.tex:12-15
 ```
 
-to the prompt's context. Otherwise it adds nothing. It never adds the selection:
-the system primary selection cannot be tied to Okular, and is often the text just
-selected in the terminal the prompt is typed in; the model can still call
-`get_selection`. The hook always exits 0, also on bad input or when Okular or the
-bus does not answer (each qdbus call may take 0.3 s, and a 0.8 s watchdog ends it
-silently), so it never blocks a prompt.
+to the prompt's context. Otherwise it adds nothing. The selection lines come only
+when the selected words are found on the document's current page or a page next
+to it (as for `get_selection`): the system primary selection cannot be tied to
+Okular otherwise, and is often the text just selected in the terminal the prompt
+is typed in. The text is cut at 2000 characters (` […]` marks the cut). The
+`Source:` lines follow when the PDF has SyncTeX data (`:12` alone for a single
+line), with the file relative to the working directory when it lies inside it.
+
+The hook always exits 0, also on bad input or when Okular or the bus does not
+answer (each qdbus call may take 0.3 s, and a 0.8 s watchdog ends it silently), so
+it never blocks a prompt. The selection part has its own deadline, 0.6 s after the
+hook starts: if reading the selection, `pdftotext` or `synctex` is slow or
+missing, the hook leaves the selection out and still reports the page. Measured
+on a 54-page paper with SyncTeX data, the whole hook takes about 0.26 s with a
+selection found and mapped (about 0.14 s of it for the selection part) and about
+0.13 s without one.
 
 ## No reload tool, and saving
 
@@ -98,6 +132,11 @@ Linux with KDE's Okular on the session D-Bus, plus:
 
 - `qdbus` (Qt tools; installed with Okular on most distributions)
 - `wl-clipboard` on Wayland, or `xclip`/`xsel` on X11, for `get_selection`
+- optional: `pdftotext` (poppler; `poppler` or `poppler-utils`), to find the page
+  of a selection; without it, `page` is the current page and the hook leaves
+  the selection out
+- optional: `synctex` (TeX Live), for the `tex` source lines and the hook's
+  `Source:` lines
 - Python 3.10+; `mcp` is the only dependency
 
 ## Install
@@ -133,7 +172,10 @@ Any other client: run `okular-mcp` as a stdio server.
   vscode-pdf-external-open extension, run it without `--unique` (one window per
   PDF) and leave `--unique` to the LaTeX build viewer only; see that README.
 - **Selection text is Okular's text layer**, returned verbatim: hyphenation
-  and column order can be messy.
+  and column order can be messy. A selection whose words the page's text does
+  not have in that order (it spans a page break, or Okular split a formula
+  differently from `pdftotext`) is not found: `page` is then the current page,
+  without `tex`, and the hook leaves it out.
 - **Minimal client environments.** Some MCP clients (Codex, the Python SDK's
   client) start servers with only `HOME`, `PATH`, `SHELL` and `USER`. Before any
   `qdbus`, `wl-paste`, `xclip` or `xsel` call, the server (and the hook) recover
@@ -149,10 +191,13 @@ uv venv && uv pip install -e '.[test]'
 ```
 
 The tests run against fakes (a fake session bus behind `viewer._call`, a fake
-`subprocess.run` and `PATH`); they never start Okular or touch the real bus.
+`subprocess.run` and `PATH`, fake `pdftotext`/`synctex` output); they never start
+Okular or touch the real bus. With `pdflatex`, `synctex` and `pdftotext`
+installed, `tests/test_sourcelines.py` also compiles a small LaTeX document and
+checks the selections' pages and source lines with the real tools.
 `okular_mcp/viewer.py` is the only Okular-specific module (`windows`, `entries`,
-`active`, `goto`), `selection.py` reads the system selection, `hook.py` is the
-prompt hook.
+`active`, `goto`), `selection.py` reads the system selection, `sourcelines.py`
+finds it on the page and maps it to source lines, `hook.py` is the prompt hook.
 
 ## License
 

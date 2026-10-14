@@ -27,6 +27,12 @@ def sel(monkeypatch):
     return s
 
 
+@pytest.fixture(autouse=True)
+def layer(tools):
+    """Fake pdftotext/synctex (empty pages unless a test installs others): no real tools run."""
+    return tools()
+
+
 def _call(name, args):
     return asyncio.run(server.mcp.call_tool(name, args))
 
@@ -73,16 +79,52 @@ def test_c2_primary_attributed_to_active_entry(two_windows, pdfs, sel):
     assert sel.reads == ["primary"]
 
 
-def test_c2_never_reports_tex_even_with_a_synctex_file(two_windows, pdfs, sel, monkeypatch):
-    """Okular reports no selection position, so there is nothing to map through SyncTeX."""
-    base = pdfs["a"][:-len(".pdf")]
-    for ext in (".synctex.gz", ".synctex", ".tex"):
-        open(base + ext, "w").close()
+def test_c2_page_is_where_the_selected_words_are(two_windows, pdfs, sel, tools):
+    """The current page, else the next, else the previous one; else the current page."""
+    t = tools({2: ["the lazy dog"], 3: ["a quick fox"], 4: ["the lazy dog"]})
+    for text, page in (("lazy dog", 4), ("quick", 3), ("absent words", 3)):
+        sel.text = text
+        assert server.get_selection()["page"] == page, text
+    assert t.calls[0] == [["pdftotext", "-f", "2", "-l", "4", "-bbox-layout", pdfs["a"], "-"]]
+
+
+def test_c2_tex_for_a_unique_match_with_synctex_data(two_windows, pdfs, sel, tools):
+    open(pdfs["a"][:-len(".pdf")] + ".synctex.gz", "w").close()
+    tools({3: ["the quick brown fox", "jumps over the dog"]},
+          edit={(3, 0, 1): ("/src/./a.tex", 7), (3, 1, 1): ("/src/a.tex", 8)})
+    sel.text = "quick brown fox jumps over"
+    assert server.get_selection() == {"text": sel.text, "source": "primary", "viewer": "okular",
+                                      "path": pdfs["a"], "page": 3,
+                                      "tex": [{"file": "/src/a.tex", "lines": [7, 8]}]}
+    assert _call("get_selection", {}).structured_content["tex"] == [{"file": "/src/a.tex", "lines": [7, 8]}]
+
+
+def test_c2_no_tex_without_synctex_data_or_for_an_ambiguous_match(two_windows, pdfs, sel, tools):
+    edit = {(3, 0, 1): ("/src/a.tex", 7), (3, 1, 2): ("/src/a.tex", 8)}
+    tools({3: ["the quick brown fox", "jumps over the dog"]}, edit=edit)
+    sel.text = "quick"
+    assert "tex" not in server.get_selection()  # no .synctex(.gz) next to a.pdf
+    open(pdfs["a"][:-len(".pdf")] + ".synctex", "w").close()
+    assert server.get_selection()["tex"] == [{"file": "/src/a.tex", "lines": [7, 7]}]
+    sel.text = "the"
+    r = server.get_selection()
+    assert r["page"] == 3 and "tex" not in r
+
+
+def test_c2_no_tools_for_an_empty_selection_or_the_clipboard(two_windows, pdfs, sel, tools):
+    t = tools({3: ["x"]})
+    assert server.get_selection() == {"text": "", "source": "primary", "viewer": "okular",
+                                      "path": pdfs["a"], "page": 3}
+    sel.text = "x"
+    assert server.get_selection("clipboard") == {"text": "x", "source": "clipboard"}
+    assert t.calls == []
+
+
+def test_c2_tool_failure_keeps_the_current_page(two_windows, pdfs, sel, tools):
+    t = tools({4: ["lazy dog"]})
+    t.fail["pdftotext"] = FileNotFoundError("pdftotext")
     sel.text = "lazy dog"
-    for source in ("primary", "clipboard"):
-        assert "tex" not in server.get_selection(source)
-    monkeypatch.setattr(selection, "read", lambda source="primary": "")
-    assert "tex" not in server.get_selection()
+    assert server.get_selection()["page"] == 3
 
 
 def test_c2_primary_without_active_entry_is_unattributed_not_an_error(no_okular, sel):

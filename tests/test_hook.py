@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from okular_mcp import hook, selection, viewer
+from okular_mcp import hook, selection, sourcelines, viewer
 
 
 def run(monkeypatch, capsys, stdin):
@@ -24,12 +24,26 @@ def event(cwd):
 
 
 @pytest.fixture(autouse=True)
-def no_selection(monkeypatch):
-    """C7: the Okular hook never reads the selection, even when one exists."""
-    reads = []
-    monkeypatch.setattr(selection, "read", lambda source="primary": reads.append(source) or "SELECTED TEXT")
-    yield
-    assert reads == []
+def sel(monkeypatch):
+    """A fake primary selection (nothing selected unless a test sets ``sel.text``)."""
+    class Sel:
+        text, reads, error = "", [], None
+
+        def __call__(self, source="primary", timeout=5.0):
+            self.reads.append((source, timeout))
+            if self.error:
+                raise self.error
+            return self.text
+    s = Sel()
+    s.reads = []
+    monkeypatch.setattr(selection, "read", s)
+    return s
+
+
+def additional(monkeypatch, capsys, cwd):
+    code, out = run(monkeypatch, capsys, event(cwd))
+    assert code == 0
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
 
 
 # --- C6: output shape and exit code ---
@@ -108,24 +122,146 @@ def test_c6_watchdog_cancelled_after_a_normal_run(monkeypatch, capsys, two_windo
     assert signal.getsignal(signal.SIGALRM) is not hook._alarm
 
 
-# --- C7: the text, never a selection ---
+# --- C7: the text; the selection only when its words are on the page ---
 
-def test_c7_exact_text_without_selection(monkeypatch, capsys, two_windows, pdfs):
-    _, out = run(monkeypatch, capsys, event(os.path.dirname(pdfs["a"])))
-    text = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+PAGE3 = {2: ["the previous page"], 3: ["The quick brown fox jumps", "over the lazy dog"],
+         4: ["the next page", "has other words"]}
+
+
+@pytest.fixture
+def synctex(pdfs):
+    """SyncTeX data next to a.pdf (the fake tools never read it)."""
+    open(pdfs["a"][:-len(".pdf")] + ".synctex.gz", "w").close()
+
+
+def test_c7_exact_text_without_selection(monkeypatch, capsys, two_windows, pdfs, sel):
+    text = additional(monkeypatch, capsys, os.path.dirname(pdfs["a"]))
     assert text == f"The user is reading {pdfs['a']} in Okular, page 3 of 10."
-    assert "SELECTED TEXT" not in out and "Selected text" not in out
+    assert sel.reads and sel.reads[0][0] == "primary"
 
 
-def test_c7_no_source_line_even_with_a_selection_and_synctex(monkeypatch, capsys, two_windows, pdfs):
-    base = pdfs["a"][:-len(".pdf")]
-    for ext in (".synctex.gz", ".tex"):
-        open(base + ext, "w").close()
-    monkeypatch.setattr(selection, "read", lambda source="primary": "lazy dog")
-    _, out = run(monkeypatch, capsys, event(os.path.dirname(pdfs["a"])))
-    text = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-    assert text == f"The user is reading {pdfs['a']} in Okular, page 3 of 10."
-    assert "Source:" not in out and "lazy dog" not in out
+def test_c7_selection_found_on_the_current_page(monkeypatch, capsys, two_windows, pdfs, sel, tools):
+    tools(PAGE3)
+    sel.text = "lazy dog"
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.\nSelected text (page 3):\nlazy dog")
+
+
+def test_c7_selection_on_the_next_page_keeps_the_page_sentence(monkeypatch, capsys, two_windows, pdfs, sel, tools):
+    tools(PAGE3)
+    sel.text = "has other\nwords"
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.\nSelected text (page 4):\nhas other\nwords")
+
+
+def test_c7_selection_not_on_these_pages_is_left_out(monkeypatch, capsys, two_windows, pdfs, sel, tools):
+    """The primary selection may come from the terminal the prompt is typed in."""
+    tools(PAGE3)
+    sel.text = "$ git status"
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.")
+
+
+def test_c7_source_lines(monkeypatch, capsys, two_windows, pdfs, sel, tools, synctex, tmp_path):
+    inside_tex = str(tmp_path / "papers" / "sec" / "intro.tex")
+    outside_tex = "/elsewhere/macros.tex"
+    tools({3: ["The quick brown fox jumps", "over the lazy dog", "and runs far away"]},
+          edit={(3, 0, 3): (inside_tex, 12), (3, 1, 2): (inside_tex, 14), (3, 2, 1): (outside_tex, 7)})
+    sel.text = "fox jumps over the lazy dog and runs"
+    assert additional(monkeypatch, capsys, str(tmp_path / "papers")) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.\nSelected text (page 3):\n"
+        "fox jumps over the lazy dog and runs\nSource: sec/intro.tex:12-14\nSource: /elsewhere/macros.tex:7")
+
+
+def test_c7_no_source_lines_without_synctex_data(monkeypatch, capsys, two_windows, pdfs, sel, tools):
+    tools(PAGE3, edit={(3, 1, 2): ("/x/a.tex", 4)})
+    sel.text = "lazy"
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])).endswith("Selected text (page 3):\nlazy")
+
+
+def test_c7_no_source_lines_for_an_ambiguous_selection(monkeypatch, capsys, two_windows, pdfs, sel, tools, synctex):
+    tools(PAGE3, edit={(3, 0, 0): ("/x/a.tex", 4), (3, 1, 1): ("/x/a.tex", 5)})
+    sel.text = "the"
+    assert "Source:" not in additional(monkeypatch, capsys, os.path.dirname(pdfs["a"]))
+
+
+def test_c7_selection_cut_at_2000_characters(monkeypatch, capsys, two_windows, pdfs, sel):
+    monkeypatch.setattr(sourcelines, "locate", lambda *a, **k: sourcelines.Match(3, 1, []))
+    sel.text = "x" * 2001
+    text = additional(monkeypatch, capsys, os.path.dirname(pdfs["a"]))
+    assert text.endswith("\nSelected text (page 3):\n" + "x" * 2000 + " […]")
+    sel.text = "y" * 2000
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])).endswith("\n" + "y" * 2000)
+
+
+@pytest.mark.parametrize("error", [selection.SelectionError("no clipboard tool found"),
+                                   selection.SelectionError("wl-paste timed out"), OSError("x")])
+def test_c7_selection_failure_keeps_the_page_sentence(monkeypatch, capsys, two_windows, pdfs, sel, error):
+    sel.error = error
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.")
+
+
+def test_c7_slow_tools_time_out_and_keep_the_page_sentence(monkeypatch, capsys, two_windows, pdfs, sel):
+    """pdftotext hanging: the selection part gives up at its deadline, well inside the watchdog."""
+    real = sourcelines.subprocess.Popen
+    monkeypatch.setattr(sourcelines.subprocess, "Popen", lambda cmd, **kw: real(["sleep", "5"], **kw))
+    sel.text = "lazy dog"
+    t = time.monotonic()
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.")
+    assert time.monotonic() - t < hook.WATCHDOG
+
+
+def test_c7_every_step_gets_the_time_left(monkeypatch, capsys, two_windows, pdfs, sel, tools, synctex):
+    tools(PAGE3, edit={(3, 1, 2): ("/x/a.tex", 4)})
+    seen = []
+    for name in ("locate", "tex_lines"):
+        f = getattr(sourcelines, name)
+        monkeypatch.setattr(sourcelines, name, lambda *a, f=f, name=name, **k: seen.append((name, k["timeout"])) or f(*a, **k))
+    sel.text = "lazy"
+    assert "Source: /x/a.tex:4" in additional(monkeypatch, capsys, os.path.dirname(pdfs["a"]))
+    timeouts = [sel.reads[0][1]] + [t for _, t in seen]
+    assert [n for n, _ in seen] == ["locate", "tex_lines"]
+    assert all(0 < t <= hook.SELECTION_DEADLINE for t in timeouts)
+    assert timeouts == sorted(timeouts, reverse=True)
+    assert hook.SELECTION_DEADLINE < hook.WATCHDOG
+
+
+def test_c7_no_time_left_skips_the_selection(monkeypatch, capsys, two_windows, pdfs, sel):
+    monkeypatch.setattr(hook, "SELECTION_DEADLINE", 0.0)
+    sel.text = "lazy dog"
+    assert additional(monkeypatch, capsys, os.path.dirname(pdfs["a"])) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.")
+    assert sel.reads == []
+
+
+def test_c7_context_without_a_deadline_has_no_selection(two_windows, pdfs, sel):
+    sel.text = "lazy dog"
+    assert hook.context({"cwd": os.path.dirname(pdfs["a"])}) == (
+        f"The user is reading {pdfs['a']} in Okular, page 3 of 10.")
+    assert sel.reads == []
+
+
+@pytest.mark.parametrize("file, cwd, expected", [
+    ("/p/sec/a.tex", "/p", "sec/a.tex"),
+    ("/p/a.tex", "/p/", "a.tex"),
+    ("/p/./sec/../a.tex", "/p", "a.tex"),
+    ("/q/a.tex", "/p", "/q/a.tex"),
+    ("/pq/a.tex", "/p", "/pq/a.tex"),
+    ("/p", "/p", "p"),
+])
+def test_c7_relative_to_cwd(file, cwd, expected):
+    assert hook.relative_to_cwd(file, cwd) == expected
+
+
+def test_c7_relative_to_cwd_after_resolving_symlinks(tmp_path):
+    (tmp_path / "real" / "sec").mkdir(parents=True)
+    tex = tmp_path / "real" / "sec" / "a.tex"
+    tex.write_text("x")
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    assert hook.relative_to_cwd(str(tex), str(tmp_path / "link")) == "sec/a.tex"
+    assert hook.relative_to_cwd(str(tmp_path / "link" / "sec" / "a.tex"), str(tmp_path / "real")) == "sec/a.tex"
 
 
 # --- C8: only the active entry, only inside cwd ---
